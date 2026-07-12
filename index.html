@@ -469,6 +469,32 @@ function deleteEntry(type, id) {
 
 let fbApp = null, fbDb = null, fbUnsub = null, fbPushTimer = null;
 
+// Journal de débogage affiché dans Réglages > Synchronisation, pour voir
+// précisément à quelle étape une synchronisation bloque ou échoue.
+const syncDebugLog = [];
+function logSync(msg) {
+  const line = new Date().toLocaleTimeString('fr-FR', { hour12: false }) + '  ' + msg;
+  syncDebugLog.push(line);
+  if (syncDebugLog.length > 60) syncDebugLog.shift();
+  console.log('[sync]', msg);
+  if (state.ui.tab === 'reglages' && state.ui.reglagesSubTab === 'firebase') render();
+}
+
+// Empêche un appel Firestore de bloquer indéfiniment l'interface : au-delà du
+// délai, on abandonne et on affiche une erreur exploitable plutôt que de rester
+// bloqué sur "Synchronisation en cours…".
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(Object.assign(new Error('Délai dépassé (' + label + ')'), { code: 'timeout-' + label }));
+    }, ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
 function firebaseReady() {
   return !!(state.settings.firebaseEnabled && state.settings.firebase && state.settings.firebase.apiKey && state.settings.firebase.projectId && state.settings.syncId);
 }
@@ -477,16 +503,20 @@ function initFirebase() {
   if (!firebaseReady()) return false;
   if (fbApp) return true;
   if (typeof firebase === 'undefined') {
+    logSync("Échec : le SDK Firebase (firebase-app-compat.js / firebase-firestore-compat.js) n'est pas chargé.");
     state.sync.lastError = 'sdk-not-loaded';
     persist('sync');
     return false;
   }
   try {
+    logSync('Initialisation de Firebase (projet : ' + state.settings.firebase.projectId + ')…');
     fbApp = firebase.initializeApp(state.settings.firebase);
-    fbDb = firebase.firestore();
+    fbDb = firebase.firestore(fbApp);
+    logSync('Firebase initialisé.');
     return true;
   } catch (e) {
     console.error('Firebase init error', e);
+    logSync('Échec de l\'initialisation Firebase : ' + (e && e.message ? e.message : e));
     state.sync.lastError = (e && e.code) || 'init-failed';
     persist('sync');
     return false;
@@ -495,7 +525,12 @@ function initFirebase() {
 
 function teardownFirebase() {
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  const app = fbApp;
   fbApp = null; fbDb = null;
+  // On désenregistre proprement l'app Firebase pour pouvoir la réinitialiser
+  // ensuite (sinon initializeApp() rejette avec "app already exists").
+  if (app && typeof app.delete === 'function') return app.delete().catch(() => {});
+  return Promise.resolve();
 }
 
 function docRef() {
@@ -513,20 +548,25 @@ function buildSyncPayload() {
   };
 }
 
+const FIREBASE_TIMEOUT_MS = 15000;
+
 async function pushToFirebase() {
   if (!initFirebase()) return false;
   const ref = docRef();
   if (!ref) return false;
   const payload = buildSyncPayload();
   try {
-    await ref.set(payload);
+    logSync('Envoi des données locales vers Firestore…');
+    await withTimeout(ref.set(payload), FIREBASE_TIMEOUT_MS, 'push');
     state.sync.lastSyncedAt = payload.updatedAt;
     state.sync.localUpdatedAt = payload.updatedAt;
     state.sync.lastError = '';
     persist('sync');
+    logSync('Envoi terminé avec succès.');
     return true;
   } catch (e) {
     console.error('Firebase push failed', e);
+    logSync('Échec de l\'envoi : ' + (e && e.code ? e.code : (e && e.message) || e));
     state.sync.lastError = e && e.code ? e.code : 'push-failed';
     persist('sync');
     return false;
@@ -542,12 +582,15 @@ function scheduleFirebasePush() {
 async function fetchFirebaseDoc() {
   if (!initFirebase()) return null;
   const ref = docRef();
-  if (!ref) return null;
+  if (!ref) { logSync('Échec : impossible de construire la référence du document (syncId manquant ?).'); return null; }
   try {
-    const snap = await ref.get();
+    logSync('Lecture du document Firestore (ledgers/' + state.settings.syncId + ')…');
+    const snap = await withTimeout(ref.get(), FIREBASE_TIMEOUT_MS, 'fetch');
+    logSync(snap.exists ? 'Document trouvé sur le serveur.' : "Aucun document existant pour cet identifiant de synchro.");
     return snap.exists ? snap.data() : null;
   } catch (e) {
     console.error('Firebase fetch failed', e);
+    logSync('Échec de la lecture : ' + (e && e.code ? e.code : (e && e.message) || e));
     state.sync.lastError = e && e.code ? e.code : 'fetch-failed';
     persist('sync');
     return null;
@@ -566,37 +609,50 @@ function applyRemoteData(remote) {
   state.sync.localUpdatedAt = state.sync.lastSyncedAt;
   state.sync.lastError = '';
   persist('sync');
+  logSync('Données distantes appliquées localement.');
 }
 
 function startRealtimeListener() {
   if (!initFirebase() || fbUnsub) return;
   const ref = docRef();
   if (!ref) return;
+  logSync('Écouteur temps réel démarré.');
   fbUnsub = ref.onSnapshot((snap) => {
     if (!snap.exists || snap.metadata.hasPendingWrites) return;
     const remote = snap.data();
     if (remote.updatedAt && remote.updatedAt > state.sync.localUpdatedAt) {
+      logSync('Changement détecté depuis un autre appareil, mise à jour…');
       applyRemoteData(remote);
       render();
     }
-  }, (err) => { console.error('Firebase listener error', err); });
+  }, (err) => {
+    console.error('Firebase listener error', err);
+    logSync("Erreur de l'écouteur temps réel : " + (err && err.code ? err.code : err));
+    state.sync.lastError = (err && err.code) || 'listener-failed';
+    persist('sync');
+    render();
+  });
 }
 
 // Concilie les données locales et distantes au démarrage (ou sur demande manuelle).
 // Ne sollicite l'utilisateur que si les deux côtés ont divergé depuis la dernière
 // synchro réussie — sinon la fusion la plus sûre est appliquée automatiquement.
 async function reconcileFirebase() {
+  logSync('--- Nouvelle synchronisation ---');
   if (!state.settings.firebaseEnabled) {
+    logSync('Synchronisation désactivée dans les réglages.');
     state.sync.lastError = '';
     return; // désactivé intentionnellement, pas une erreur — le statut l'indique déjà
   }
   if (!state.settings.firebase || !state.settings.firebase.apiKey || !state.settings.firebase.projectId || !state.settings.syncId) {
+    logSync('Configuration incomplète (clé API, ID de projet ou identifiant de synchro manquant).');
     state.sync.lastError = 'config-incomplete';
     persist('sync');
     render();
     return;
   }
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    logSync('Le navigateur indique être hors ligne (navigator.onLine = false).');
     state.sync.lastError = 'offline';
     persist('sync');
     render();
@@ -611,7 +667,7 @@ async function reconcileFirebase() {
     const remote = await fetchFirebaseDoc();
 
     if (!remote) {
-      // Pas de document sur le serveur, ou erreur de lecture (voir state.sync.lastError) :
+      // Pas de document sur le serveur, ou erreur de lecture (voir le journal) :
       // on tente quand même d'envoyer nos données locales si on en a.
       if (state.contributions.length || state.values.length) await pushToFirebase();
       startRealtimeListener();
@@ -621,8 +677,10 @@ async function reconcileFirebase() {
     const lastSynced = state.sync.lastSyncedAt || '';
     const localChanged = (state.sync.localUpdatedAt || '') > lastSynced;
     const remoteChanged = (remote.updatedAt || '') > lastSynced;
+    logSync('Comparaison — local modifié depuis dernière synchro : ' + localChanged + ', serveur modifié depuis dernière synchro : ' + remoteChanged + '.');
 
     if (localChanged && remoteChanged) {
+      logSync('Conflit détecté : les deux côtés ont changé — demande à l\'utilisateur.');
       state.ui.syncConflict = { remote };
     } else if (remoteChanged) {
       applyRemoteData(remote);
@@ -631,20 +689,23 @@ async function reconcileFirebase() {
       await pushToFirebase();
       startRealtimeListener();
     } else {
+      logSync('Rien de nouveau des deux côtés.');
       startRealtimeListener();
     }
   } catch (e) {
     console.error('Firebase reconcile error', e);
+    logSync('Erreur inattendue pendant la synchronisation : ' + (e && e.code ? e.code : (e && e.message) || e));
     state.sync.lastError = (e && e.code) || 'unexpected-error';
     persist('sync');
   } finally {
     state.ui.syncBusy = false;
+    logSync('--- Synchronisation terminée ---');
     render();
   }
 }
 
-function restartFirebaseSync() {
-  teardownFirebase();
+async function restartFirebaseSync() {
+  await teardownFirebase();
   state.ui.syncConflict = null;
   if (firebaseReady()) reconcileFirebase();
 }
@@ -1126,6 +1187,17 @@ function reglagesFirebaseTemplate() {
   html += '<button class="primary-btn small" data-action="sync-now"' + (state.ui.syncBusy ? ' disabled' : '') + '>Synchroniser maintenant</button>';
   html += '<button class="secondary-btn" style="margin-top:8px;" data-action="reset-firebase-config">Rétablir la configuration par défaut</button>';
 
+  html += '<div><div class="section-title">Journal de débogage</div>' +
+    '<p class="desc">Trace en temps réel des étapes de synchronisation — utile pour comprendre où ça bloque.</p>' +
+    '<pre id="sync-debug-log" style="background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:10px;line-height:1.6;max-height:220px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;color:var(--muted);margin:0;">' +
+      (syncDebugLog.length ? escapeHtml(syncDebugLog.join('\n')) : 'Aucune activité pour le moment — cliquez sur « Synchroniser maintenant ».') +
+    '</pre>' +
+    '<div style="display:flex;gap:8px;margin-top:8px;">' +
+      '<button class="secondary-btn" data-action="copy-debug-log">' + ICONS.copy + ' Copier le journal</button>' +
+      '<button class="secondary-btn" data-action="clear-debug-log">Vider</button>' +
+    '</div>' +
+  '</div>';
+
   html += '</div>';
   return html;
 }
@@ -1210,6 +1282,9 @@ function render() {
 
   document.getElementById('modal-root').innerHTML = modalTemplate();
   if (state.ui.formOpen) updateSubmitState();
+
+  const logEl = document.getElementById('sync-debug-log');
+  if (logEl) logEl.scrollTop = logEl.scrollHeight;
 }
 
 function updateSubmitState() {
@@ -1280,6 +1355,10 @@ document.addEventListener('click', (e) => {
     if (input && navigator.clipboard) navigator.clipboard.writeText(input.value).catch(() => {});
   }
   else if (action === 'sync-now') { reconcileFirebase(); }
+  else if (action === 'copy-debug-log') {
+    if (navigator.clipboard) navigator.clipboard.writeText(syncDebugLog.join('\n')).catch(() => {});
+  }
+  else if (action === 'clear-debug-log') { syncDebugLog.length = 0; render(); }
   else if (action === 'reset-firebase-config') {
     state.settings.firebase = Object.assign({}, DEFAULT_FIREBASE_CONFIG);
     persist('settings');
