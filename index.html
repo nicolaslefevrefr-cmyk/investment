@@ -16,7 +16,7 @@
 <link rel="icon" href="icon-192.png">
 
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <style>
@@ -923,19 +923,36 @@ function chartLibAvailable() {
 }
 
 // Recharge dynamiquement Chart.js si le <script> du <head> n'a pas pu se
-// charger (réseau restreint, bloqueur, etc.) — utilisé par le bouton « Réessayer ».
+// charger (réseau restreint, CDN en panne, etc.) — essaie plusieurs miroirs
+// à la suite. Utilisé par le bouton « Réessayer » et une tentative automatique.
+const CHART_LIB_MIRRORS = [
+  'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js',
+  'https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js',
+  'https://unpkg.com/chart.js@4.5.0/dist/chart.umd.min.js',
+];
 let chartLibLoading = null;
-function loadChartLib() {
-  if (chartLibAvailable()) return Promise.resolve(true);
-  if (chartLibLoading) return chartLibLoading;
-  chartLibLoading = new Promise((resolve) => {
+function loadOneScript(src) {
+  return new Promise((resolve) => {
     const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';
+    s.src = src;
     s.onload = () => resolve(true);
     s.onerror = () => resolve(false);
     document.head.appendChild(s);
-  }).finally(() => { chartLibLoading = null; });
-  return chartLibLoading;
+  });
+}
+async function loadChartLib() {
+  if (chartLibAvailable()) return true;
+  if (chartLibLoading) return chartLibLoading;
+  chartLibLoading = (async () => {
+    for (const url of CHART_LIB_MIRRORS) {
+      if (chartLibAvailable()) break;
+      await loadOneScript(url);
+    }
+    return chartLibAvailable();
+  })();
+  const result = await chartLibLoading;
+  chartLibLoading = null;
+  return result;
 }
 
 function initMainChart(canvasId) {
@@ -1578,6 +1595,9 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 /* ==================================== INIT ==================================== */
 render();
 if (firebaseReady()) reconcileFirebase();
+if (!chartLibAvailable()) {
+  loadChartLib().then((ok) => { if (ok) render(); });
+}
 
 </script>
 </body>
