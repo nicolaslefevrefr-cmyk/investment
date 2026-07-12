@@ -402,7 +402,7 @@ const state = {
     },
     loadJSON(KEYS.settings, {})
   ),
-  sync: Object.assign({ localUpdatedAt: '', lastSyncedAt: '' }, loadJSON(KEYS.sync, {})),
+  sync: Object.assign({ localUpdatedAt: '', lastSyncedAt: '', lastError: '' }, loadJSON(KEYS.sync, {})),
   ui: {
     tab: 'resume',
     forecastYears: 10,
@@ -476,12 +476,19 @@ function firebaseReady() {
 function initFirebase() {
   if (!firebaseReady()) return false;
   if (fbApp) return true;
+  if (typeof firebase === 'undefined') {
+    state.sync.lastError = 'sdk-not-loaded';
+    persist('sync');
+    return false;
+  }
   try {
     fbApp = firebase.initializeApp(state.settings.firebase);
     fbDb = firebase.firestore();
     return true;
   } catch (e) {
     console.error('Firebase init error', e);
+    state.sync.lastError = (e && e.code) || 'init-failed';
+    persist('sync');
     return false;
   }
 }
@@ -582,15 +589,17 @@ async function reconcileFirebase() {
   if (!firebaseReady()) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   state.ui.syncBusy = true;
-  if (state.ui.tab === 'reglages' && state.ui.reglagesSubTab === 'firebase') render();
+  render();
 
   const remote = await fetchFirebaseDoc();
   state.ui.syncBusy = false;
 
   if (!remote) {
-    // Pas encore de document sur le serveur : on l'initialise avec les données locales.
+    // Pas de document sur le serveur, ou erreur de lecture (voir state.sync.lastError) :
+    // on tente quand même d'envoyer nos données locales si on en a.
     if (state.contributions.length || state.values.length) await pushToFirebase();
     startRealtimeListener();
+    render();
     return;
   }
 
@@ -600,10 +609,8 @@ async function reconcileFirebase() {
 
   if (localChanged && remoteChanged) {
     state.ui.syncConflict = { remote };
-    render();
   } else if (remoteChanged) {
     applyRemoteData(remote);
-    render();
     startRealtimeListener();
   } else if (localChanged) {
     await pushToFirebase();
@@ -611,6 +618,7 @@ async function reconcileFirebase() {
   } else {
     startRealtimeListener();
   }
+  render();
 }
 
 function restartFirebaseSync() {
