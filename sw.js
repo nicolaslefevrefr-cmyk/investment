@@ -1,8 +1,10 @@
 // Service worker — Grand livre
-// Stratégie : cache-first pour les fichiers de l'application (mêmes origines),
-// stale-while-revalidate pour les ressources externes (polices, Chart.js).
+// Stratégie : network-first pour les fichiers de l'application (toujours la
+// dernière version quand il y a du réseau ; le cache ne sert que de secours
+// hors-ligne), stale-while-revalidate pour les ressources externes (polices,
+// Chart.js, SDK Firebase).
 
-const CACHE_VERSION = 'grand-livre-v1';
+const CACHE_VERSION = 'grand-livre-v2';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -40,13 +42,14 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (sameOrigin) {
-    // Cache-first pour les fichiers de l'application
+    // Network-first : on essaie toujours d'avoir la dernière version en ligne ;
+    // le cache ne prend le relais que si le réseau est indisponible.
     event.respondWith(
-      caches.match(req).then((cached) => cached || fetch(req).then((res) => {
+      fetch(req).then((res) => {
         const copy = res.clone();
         caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy)).catch(() => {});
         return res;
-      }).catch(() => cached))
+      }).catch(() => caches.match(req))
     );
   } else {
     // Stale-while-revalidate pour les ressources externes (polices, Chart.js)

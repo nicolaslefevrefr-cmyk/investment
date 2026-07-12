@@ -1303,6 +1303,15 @@ document.addEventListener('click', (e) => {
   if (!actionEl) return;
   const action = actionEl.getAttribute('data-action');
 
+  try {
+    handleClickAction(action, actionEl);
+  } catch (err) {
+    console.error('Erreur lors du traitement du clic (' + action + ')', err);
+    alert("Une erreur inattendue s'est produite (" + action + ") : " + (err && err.message ? err.message : err) + "\nOuvrez la console du navigateur pour plus de détails.");
+  }
+});
+
+function handleClickAction(action, actionEl) {
   if (action === 'set-tab') { state.ui.tab = actionEl.getAttribute('data-tab'); render(); }
   else if (action === 'toggle-theme') { state.settings.theme = state.settings.theme === 'light' ? 'dark' : 'light'; persist('settings'); render(); }
   else if (action === 'install-app') { triggerInstall(); }
@@ -1377,7 +1386,7 @@ document.addEventListener('click', (e) => {
     render();
   }
   else if (action === 'postpone-conflict') { state.ui.syncConflict = null; render(); }
-});
+}
 
 document.addEventListener('change', (e) => {
   const role = e.target.getAttribute && e.target.getAttribute('data-role');
