@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Grand livre — suivi d'investissement</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#3C8A5F">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Grand livre">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<style>
+  :root[data-theme="light"] {
+    --ink: #F6F4EE; --surface: #FFFFFF; --surface2: #F1EEE5; --line: #DEDACB;
+    --text: #20241F; --muted: #6E7A70; --gain: #3C8A5F; --loss: #B0553A; --invested: #AD7A2C;
+    --forecast-hist: #4C61A3; --forecast-r2: #5B6B5D; --forecast-r4: #AD7A2C; --forecast-r6: #3C8A5F; --forecast-r8: #B0553A;
+  }
+  :root[data-theme="dark"] {
+    --ink: #0F1613; --surface: #161F1B; --surface2: #1D2823; --line: #2A3A33;
+    --text: #EDEAE0; --muted: #8CA093; --gain: #6FBF8B; --loss: #C97B63; --invested: #D9A05B;
+    --forecast-hist: #7C93C9; --forecast-r2: #77897C; --forecast-r4: #D9A05B; --forecast-r6: #6FBF8B; --forecast-r8: #C97B63;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--ink); color: var(--text); font-family: 'Inter', sans-serif;
+    padding-bottom: 84px; min-height: 100vh; transition: background .2s, color .2s;
+  }
+  input, select { font-family: 'IBM Plex Mono', monospace; }
+  ::selection { background: color-mix(in srgb, var(--gain) 30%, transparent); }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--forecast-hist); outline-offset: 1px; }
+  button { font-family: inherit; }
+
+  .wrap { max-width: 640px; margin: 0 auto; }
+  header.app-header { padding: 20px 16px 16px; border-bottom: 1px solid var(--line); }
+  .header-top { display: flex; align-items: center; justify-content: space-between; }
+  .brand { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 600; letter-spacing: .2px; }
+  .header-right { display: flex; align-items: center; gap: 10px; }
+  .storage-warn { font-size: 10px; color: var(--loss); font-family: 'IBM Plex Mono', monospace; }
+  .theme-btn {
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 999px; width: 30px; height: 30px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text);
+  }
+  .install-btn {
+    background: var(--gain); border: none; border-radius: 999px; width: 30px; height: 30px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--ink);
+  }
+  .big-value { margin-top: 10px; font-family: 'Fraunces', serif; font-size: 40px; font-weight: 500; line-height: 1; }
+  .sub-values { margin-top: 6px; display: flex; gap: 14px; font-size: 13px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); flex-wrap: wrap; }
+  .sub-values .invested-amt { color: var(--invested); }
+
+  main { padding: 0 16px; }
+  section.tab-panel { padding-top: 18px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 10px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
+  .legend-swatch { width: 12px; height: 2px; display: inline-block; }
+  .legend-swatch.dashed { border-top: 2px dashed currentColor; height: 0; }
+  .legend-swatch.solid { border-top: 2px solid currentColor; height: 0; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 6px 4px; }
+  .chart-box { position: relative; width: 100%; height: 280px; }
+  .chart-box.small { height: 220px; }
+
+  .controls-row { margin-top: 16px; display: flex; gap: 10px; }
+  .field { display: flex; flex-direction: column; gap: 5px; flex: 1; font-size: 11px; color: var(--muted); font-family: 'Inter', sans-serif; }
+  .field select, .field input { width: 100%; background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; color: var(--text); font-size: 14px; }
+
+  .toggle-row {
+    margin-top: 10px; display: flex; align-items: center; gap: 10px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  }
+  .toggle-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--gain); flex-shrink: 0; cursor: pointer; }
+  .toggle-row label { font-size: 12px; color: var(--text); flex: 1; cursor: pointer; }
+  .toggle-row input[type="number"] { width: 90px; padding: 6px 8px; background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); font-size: 14px; }
+  .toggle-row input[type="number"]:disabled { opacity: .4; }
+
+  .hint { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  .section-title { font-family: 'Fraunces', serif; font-size: 15px; font-weight: 600; }
+  .section-block { margin-top: 28px; }
+
+  .empty-state { margin-top: 24px; padding: 28px 20px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+  .empty-state .icon { display: flex; justify-content: center; margin-bottom: 10px; color: var(--muted); }
+  .empty-state .title { font-family: 'Fraunces', serif; font-size: 16px; margin-bottom: 6px; }
+  .empty-state .text { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  .quick-row { display: flex; gap: 8px; }
+  .quick-btn {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 8px;
+    color: var(--text); font-size: 12px; cursor: pointer;
+  }
+  .filter-row { display: flex; gap: 6px; margin-top: 16px; margin-bottom: 10px; }
+  .filter-chip { background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 20px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+  .filter-chip.active { background: var(--surface2); color: var(--text); }
+
+  .entry-list { display: flex; flex-direction: column; gap: 6px; }
+  .entry-row { display: flex; align-items: center; justify-content: space-between; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .entry-left { display: flex; align-items: center; gap: 10px; }
+  .entry-dot { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
+  .entry-amount { font-family: 'IBM Plex Mono', monospace; font-size: 14px; }
+  .entry-meta { font-size: 11px; color: var(--muted); }
+  .entry-actions { display: flex; gap: 4px; }
+  .icon-btn { background: none; border: none; color: var(--muted); cursor: pointer; padding: 6px; border-radius: 6px; display: flex; }
+  .icon-btn:hover { color: var(--text); }
+
+  .settings-block { display: flex; flex-direction: column; gap: 20px; }
+  .settings-block p.desc { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
+  .settings-block input, .settings-block select {
+    width: 100%; background: var(--surface2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; color: var(--text); font-size: 14px;
+  }
+  .danger-btn { margin-top: 8px; background: none; border: 1px solid var(--loss); border-radius: 8px; padding: 8px 14px; color: var(--loss); font-size: 12px; cursor: pointer; }
+  .secondary-btn { background: none; border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; color: var(--text); font-size: 12px; cursor: pointer; }
+  .confirm-row { margin-top: 8px; display: flex; gap: 8px; }
+  .data-count { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .storage-status { font-size: 11px; margin-top: 4px; }
+
+  .subtab-row { display: flex; gap: 6px; margin-bottom: 20px; }
+  .subtab-btn { flex: 1; background: var(--surface); border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 8px 0; font-size: 12px; cursor: pointer; }
+  .subtab-btn.active { background: var(--surface2); color: var(--text); border-color: var(--gain); }
+
+  .sync-status-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: flex; align-items: center; gap: 10px; }
+  .sync-dot { width: 9px; height: 9px; border-radius: 999px; flex-shrink: 0; }
+  .sync-status-text { font-size: 12px; line-height: 1.5; }
+  .sync-status-text .label { color: var(--text); }
+  .sync-status-text .sub { color: var(--muted); font-size: 11px; }
+
+  .sync-id-row { display: flex; gap: 6px; }
+  .sync-id-row input { font-size: 13px; letter-spacing: .5px; }
+
+  .primary-btn.small { padding: 9px 0; font-size: 13px; margin-top: 10px; }
+
+  nav.tabbar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--line); display: flex; z-index: 30; }
+  nav.tabbar .wrap { display: flex; width: 100%; }
+  .tab-btn { flex: 1; background: none; border: none; padding: 10px 0 12px; display: flex; flex-direction: column; align-items: center; gap: 3px; color: var(--muted); cursor: pointer; }
+  .tab-btn.active { color: var(--gain); }
+  .tab-btn span { font-size: 10px; }
+
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; z-index: 50; }
+  .modal-sheet { background: var(--surface); border-top: 1px solid var(--line); border-radius: 16px 16px 0 0; padding: 18px 18px 28px; width: 100%; max-width: 640px; margin: 0 auto; }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .modal-title { font-family: 'Fraunces', serif; font-size: 17px; font-weight: 600; }
+  .primary-btn { width: 100%; background: var(--gain); border: none; border-radius: 8px; padding: 12px 0; color: var(--ink); font-weight: 600; font-size: 14px; cursor: pointer; margin-top: 18px; }
+  .primary-btn:disabled { opacity: .5; cursor: default; }
+
+  .chartjs-tooltip-date { color: var(--muted); margin-bottom: 4px; }
+</style>
+</head>
+<body>
+  <header class="app-header" id="app-header"></header>
+  <main><div class="wrap">
+    <section class="tab-panel" id="main-content"></section>
+  </div></main>
+  <nav class="tabbar" id="tabbar"></nav>
+  <div id="modal-root"></div>
+
+<script>
+/* ============================== ICÔNES ============================== */
+function icon(paths, size) {
+  size = size || 18;
+  return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+paths+'</svg>';
+}
+const ICONS = {
+  plus: icon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>', 14),
+  trash: icon('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>', 14),
+  pencil: icon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 14),
+  x: icon('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>', 18),
+  sun: icon('<circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.9" y1="4.9" x2="6.3" y2="6.3"/><line x1="17.7" y1="17.7" x2="19.1" y2="19.1"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.9" y1="19.1" x2="6.3" y2="17.7"/><line x1="17.7" y1="6.3" x2="19.1" y2="4.9"/>', 14),
+  moon: icon('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/>', 14),
+  wallet: icon('<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>', 16),
+  piggy: icon('<circle cx="12" cy="13" r="7"/><path d="M9 13h6"/><path d="M12 6V3"/>', 16),
+  book: icon('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z"/>', 22),
+  trending: icon('<polyline points="3 17 9 11 13 15 21 7"/><polyline points="14 7 21 7 21 14"/>', 18),
+  gear: icon('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15 1.65 1.65 0 0 0 3.09 14H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>', 18),
+  activity: icon('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>', 20),
+  linechart: icon('<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>', 22),
+  download: icon('<path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><path d="M5 20h14"/>', 14),
+  cloud: icon('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10Z"/>', 16),
+  copy: icon('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 14),
+};
+
+/* ============================== HELPERS ============================== */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+function fmtMoney(v, currency) {
+  currency = currency || 'EUR';
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  const symbol = currency === 'EUR' ? '€' : currency === 'USD' ? '$' : '£';
+  const sign = v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  return sign + abs.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ' ' + symbol;
+}
+function fmtPct(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return (v >= 0 ? '+' : '') + v.toFixed(1) + ' %';
+}
+function fmtDateShort(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: '2-digit' });
+}
+function fmtMonthYear(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' });
+}
+function fmtDateLong(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+function fmtDateTime(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+function addMonthsISO(iso, n) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setMonth(d.getMonth() + n);
+  return d.toISOString().slice(0, 10);
+}
+function daysBetween(isoA, isoB) {
+  const a = new Date(isoA + 'T00:00:00');
+  const b = new Date(isoB + 'T00:00:00');
+  return Math.round((b - a) / 86400000);
+}
+function hexAlpha(hex, alpha) {
+  const h = hex.replace('#', '').trim();
+  const r = parseInt(h.substring(0, 2), 16), g = parseInt(h.substring(2, 4), 16), b = parseInt(h.substring(4, 6), 16);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+}
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* --------------------------- Calculs financiers --------------------------- */
+
+function buildHistoricalSeries(contributions, values) {
+  const dateSet = new Set([...contributions.map(c => c.date), ...values.map(v => v.date)]);
+  const dates = Array.from(dateSet).sort();
+  if (dates.length === 0) return [];
+  const contribByDate = {};
+  contributions.forEach(c => { contribByDate[c.date] = (contribByDate[c.date] || 0) + c.amount; });
+  const valueByDate = {};
+  values.forEach(v => { valueByDate[v.date] = v.value; });
+  let running = 0;
+  return dates.map(date => {
+    if (contribByDate[date]) running += contribByDate[date];
+    return { date, investedActual: running, portfolioActual: valueByDate[date] !== undefined ? valueByDate[date] : null };
+  });
+}
+
+function estimateHistoricalRate(contributions, values) {
+  if (contributions.length === 0 || values.length === 0) return null;
+  const firstDate = [...contributions].sort((a, b) => a.date.localeCompare(b.date))[0].date;
+  const lastValueEntry = [...values].sort((a, b) => a.date.localeCompare(b.date)).slice(-1)[0];
+  const days = daysBetween(firstDate, lastValueEntry.date);
+  if (days < 21) return null;
+  const investedAtLastDate = contributions.filter(c => c.date <= lastValueEntry.date).reduce((s, c) => s + c.amount, 0);
+  if (investedAtLastDate <= 0) return null;
+  const ratio = lastValueEntry.value / investedAtLastDate;
+  if (ratio <= 0) return null;
+  return Math.pow(ratio, 365 / days) - 1;
+}
+
+function computeCumulativeRateSeries(contributions, values) {
+  const sortedContrib = [...contributions].sort((a, b) => a.date.localeCompare(b.date));
+  if (sortedContrib.length === 0) return [];
+  const firstDate = sortedContrib[0].date;
+  const sortedValues = [...values].sort((a, b) => a.date.localeCompare(b.date));
+  const series = [];
+  sortedValues.forEach(v => {
+    const days = daysBetween(firstDate, v.date);
+    if (days < 21) return;
+    const invested = sortedContrib.filter(c => c.date <= v.date).reduce((s, c) => s + c.amount, 0);
+    if (invested <= 0) return;
+    const ratio = v.value / invested;
+    if (ratio <= 0) return;
+    series.push({ date: v.date, cumulative: (Math.pow(ratio, 365 / days) - 1) * 100 });
+  });
+  return series;
+}
+
+function computeInstantRateSeries(contributions, values) {
+  const sortedValues = [...values].sort((a, b) => a.date.localeCompare(b.date));
+  const series = [];
+  for (let i = 1; i < sortedValues.length; i++) {
+    const prev = sortedValues[i - 1], curr = sortedValues[i];
+    const D = daysBetween(prev.date, curr.date);
+    if (D < MIN_INTERVAL_DAYS || prev.value <= 0) continue;
+
+    // Méthode de Dietz modifiée : chaque versement de la période est pondéré
+    // selon le temps qu'il a effectivement passé investi (peu importe qu'il ait
+    // été suivi d'un relevé le jour même ou une semaine plus tard).
+    const flows = contributions.filter(c => c.date > prev.date && c.date <= curr.date);
+    let totalCF = 0, weightedCF = 0;
+    flows.forEach(c => {
+      const daysIn = daysBetween(prev.date, c.date);
+      const w = (D - daysIn) / D; // 1 = investi toute la période, 0 = investi le dernier jour
+      totalCF += c.amount;
+      weightedCF += c.amount * w;
+    });
+
+    const gainAmount = curr.value - prev.value - totalCF;
+    const adjustedBase = prev.value + weightedCF;
+    if (adjustedBase <= 0) continue;
+    const growthFactor = 1 + gainAmount / adjustedBase;
+    if (growthFactor <= 0) continue;
+    const rate = Math.pow(growthFactor, 365 / D) - 1;
+    series.push({ date: curr.date, instant: rate * 100 });
+  }
+  return series;
+}
+
+function projectForward(startDate, startValue, monthlyAmount, annualRate, years) {
+  const months = years * 12;
+  const monthlyRate = Math.pow(1 + annualRate, 1 / 12) - 1;
+  const points = [];
+  let value = startValue;
+  for (let m = 1; m <= months; m++) {
+    value = value * (1 + monthlyRate) + monthlyAmount;
+    points.push({ date: addMonthsISO(startDate, m), value });
+  }
+  return points;
+}
+
+const STANDARD_RATES = [
+  { key: 'r2', label: '2 %', rate: 0.02 },
+  { key: 'r4', label: '4 %', rate: 0.04 },
+  { key: 'r6', label: '6 %', rate: 0.06 },
+  { key: 'r8', label: '8 %', rate: 0.08 },
+];
+
+// En dessous de ce nombre de jours entre deux relevés, l'annualisation devient
+// trop instable pour être fiable (une petite variation sur quelques jours donne
+// un taux annualisé démesuré) — on ignore l'intervalle pour le calcul du taux.
+const MIN_INTERVAL_DAYS = 10;
+
+// Seuls les relevés marqués "de référence" comptent dans les calculs de taux,
+// ce qui permet de noter la valeur du portefeuille aussi souvent qu'on veut
+// (pour le plaisir de suivre la courbe) sans polluer l'estimation du rendement.
+function referenceValues(values) {
+  return values.filter(v => v.reference !== false);
+}
+
+/* --------------------------------- Storage -------------------------------- */
+
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyByNbXK_4JF6eBtA3e6K2kUynEfYmj8sx8",
+  authDomain: "investment-13b82.firebaseapp.com",
+  projectId: "investment-13b82",
+  storageBucket: "investment-13b82.firebasestorage.app",
+  messagingSenderId: "681077030267",
+  appId: "1:681077030267:web:2e6960e0d7e689c30491de",
+  measurementId: "G-VCKLB92NLX",
+};
+
+function genSyncId() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sans caractères ambigus (0/O, 1/I)
+  const group = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return group() + '-' + group() + '-' + group();
+}
+
+const KEYS = {
+  contributions: 'invledger:contributions',
+  values: 'invledger:values',
+  settings: 'invledger:settings',
+  sync: 'invledger:syncmeta',
+};
+let storageOk = true;
+try { localStorage.setItem('__probe__', '1'); localStorage.removeItem('__probe__'); } catch (e) { storageOk = false; }
+
+function loadJSON(key, fallback) {
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch (e) { return fallback; }
+}
+function saveJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { storageOk = false; return false; }
+}
+
+/* ==================================== STATE ==================================== */
+
+const state = {
+  contributions: loadJSON(KEYS.contributions, []),
+  values: loadJSON(KEYS.values, []),
+  settings: Object.assign(
+    {
+      currency: 'EUR', monthlyAmount: 250, theme: 'light',
+      firebaseEnabled: true,
+      firebase: Object.assign({}, DEFAULT_FIREBASE_CONFIG),
+      syncId: '',
+    },
+    loadJSON(KEYS.settings, {})
+  ),
+  sync: Object.assign({ localUpdatedAt: '', lastSyncedAt: '' }, loadJSON(KEYS.sync, {})),
+  ui: {
+    tab: 'resume',
+    forecastYears: 10,
+    rateMode: 'both',
+    projMonthlyEnabled: true,
+    projMonthlyAmount: 0,
+    journalFilter: 'all',
+    formOpen: null,
+    editEntry: null,
+    confirmingReset: false,
+    reglagesSubTab: 'general',
+    syncConflict: null,
+    syncBusy: false,
+    canInstall: false,
+    isStandalone: false,
+  },
+};
+state.ui.projMonthlyAmount = state.settings.monthlyAmount || 0;
+if (!state.settings.firebase) state.settings.firebase = Object.assign({}, DEFAULT_FIREBASE_CONFIG);
+if (!state.settings.syncId) { state.settings.syncId = genSyncId(); saveJSON(KEYS.settings, state.settings); }
+
+function persist(kind) {
+  if (kind === 'contributions') saveJSON(KEYS.contributions, state.contributions);
+  if (kind === 'values') saveJSON(KEYS.values, state.values);
+  if (kind === 'settings') saveJSON(KEYS.settings, state.settings);
+  if (kind === 'sync') saveJSON(KEYS.sync, state.sync);
+}
+
+// À appeler après toute modification des données financières (versements / relevés
+// / devise / versement mensuel) : marque les données locales comme "les plus
+// fraîches" et programme un envoi vers Firebase si la synchronisation est active.
+function markDataChanged() {
+  state.sync.localUpdatedAt = new Date().toISOString();
+  persist('sync');
+  scheduleFirebasePush();
+}
+
+function addContribution(entry) { state.contributions.push(Object.assign({ id: uid() }, entry)); persist('contributions'); markDataChanged(); render(); }
+function addValue(entry) { state.values.push(Object.assign({ id: uid() }, entry)); persist('values'); markDataChanged(); render(); }
+function updateEntry(type, id, patch) {
+  const arr = type === 'contribution' ? state.contributions : state.values;
+  const idx = arr.findIndex(e => e.id === id);
+  if (idx > -1) Object.assign(arr[idx], patch);
+  persist(type === 'contribution' ? 'contributions' : 'values');
+  markDataChanged();
+  render();
+}
+function deleteEntry(type, id) {
+  if (type === 'contribution') state.contributions = state.contributions.filter(e => e.id !== id);
+  else state.values = state.values.filter(e => e.id !== id);
+  persist(type === 'contribution' ? 'contributions' : 'values');
+  markDataChanged();
+  render();
+}
+
+/* ==================================== FIREBASE SYNC ==================================== */
+// Principe : le stockage local (localStorage) est toujours la source de vérité
+// immédiate — chaque écriture est locale d'abord. Si Firebase est configuré et
+// qu'il y a du réseau, les données sont ensuite répliquées vers Firestore, et un
+// écouteur temps réel récupère les changements faits depuis un autre appareil.
+// Au démarrage, on ne compare que ce qui a changé depuis la dernière synchro
+// réussie ; un conflit n'est signalé à l'utilisateur que si LES DEUX côtés ont
+// changé depuis cette dernière synchro (sinon la fusion se fait silencieusement).
+
+let fbApp = null, fbDb = null, fbUnsub = null, fbPushTimer = null;
+
+function firebaseReady() {
+  return !!(state.settings.firebaseEnabled && state.settings.firebase && state.settings.firebase.apiKey && state.settings.firebase.projectId && state.settings.syncId);
+}
+
+function initFirebase() {
+  if (!firebaseReady()) return false;
+  if (fbApp) return true;
+  try {
+    fbApp = firebase.initializeApp(state.settings.firebase);
+    fbDb = firebase.firestore();
+    return true;
+  } catch (e) {
+    console.error('Firebase init error', e);
+    return false;
+  }
+}
+
+function teardownFirebase() {
+  if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  fbApp = null; fbDb = null;
+}
+
+function docRef() {
+  if (!fbDb) return null;
+  return fbDb.collection('ledgers').doc(state.settings.syncId);
+}
+
+function buildSyncPayload() {
+  return {
+    contributions: state.contributions,
+    values: state.values,
+    currency: state.settings.currency,
+    monthlyAmount: state.settings.monthlyAmount,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function pushToFirebase() {
+  if (!initFirebase()) return false;
+  const ref = docRef();
+  if (!ref) return false;
+  const payload = buildSyncPayload();
+  try {
+    await ref.set(payload);
+    state.sync.lastSyncedAt = payload.updatedAt;
+    state.sync.localUpdatedAt = payload.updatedAt;
+    state.sync.lastError = '';
+    persist('sync');
+    return true;
+  } catch (e) {
+    console.error('Firebase push failed', e);
+    state.sync.lastError = e && e.code ? e.code : 'push-failed';
+    persist('sync');
+    return false;
+  }
+}
+
+function scheduleFirebasePush() {
+  if (!firebaseReady()) return;
+  clearTimeout(fbPushTimer);
+  fbPushTimer = setTimeout(() => { pushToFirebase(); }, 1200);
+}
+
+async function fetchFirebaseDoc() {
+  if (!initFirebase()) return null;
+  const ref = docRef();
+  if (!ref) return null;
+  try {
+    const snap = await ref.get();
+    return snap.exists ? snap.data() : null;
+  } catch (e) {
+    console.error('Firebase fetch failed', e);
+    state.sync.lastError = e && e.code ? e.code : 'fetch-failed';
+    persist('sync');
+    return null;
+  }
+}
+
+function applyRemoteData(remote) {
+  // Clonage défensif : on ne veut jamais que state.contributions/values partagent
+  // la même référence qu'un objet externe (évite des mutations croisées accidentelles).
+  state.contributions = JSON.parse(JSON.stringify(remote.contributions || []));
+  state.values = JSON.parse(JSON.stringify(remote.values || []));
+  if (remote.currency) state.settings.currency = remote.currency;
+  if (remote.monthlyAmount !== undefined) state.settings.monthlyAmount = remote.monthlyAmount;
+  persist('contributions'); persist('values'); persist('settings');
+  state.sync.lastSyncedAt = remote.updatedAt || new Date().toISOString();
+  state.sync.localUpdatedAt = state.sync.lastSyncedAt;
+  state.sync.lastError = '';
+  persist('sync');
+}
+
+function startRealtimeListener() {
+  if (!initFirebase() || fbUnsub) return;
+  const ref = docRef();
+  if (!ref) return;
+  fbUnsub = ref.onSnapshot((snap) => {
+    if (!snap.exists || snap.metadata.hasPendingWrites) return;
+    const remote = snap.data();
+    if (remote.updatedAt && remote.updatedAt > state.sync.localUpdatedAt) {
+      applyRemoteData(remote);
+      render();
+    }
+  }, (err) => { console.error('Firebase listener error', err); });
+}
+
+// Concilie les données locales et distantes au démarrage (ou sur demande manuelle).
+// Ne sollicite l'utilisateur que si les deux côtés ont divergé depuis la dernière
+// synchro réussie — sinon la fusion la plus sûre est appliquée automatiquement.
+async function reconcileFirebase() {
+  if (!firebaseReady()) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  state.ui.syncBusy = true;
+  if (state.ui.tab === 'reglages' && state.ui.reglagesSubTab === 'firebase') render();
+
+  const remote = await fetchFirebaseDoc();
+  state.ui.syncBusy = false;
+
+  if (!remote) {
+    // Pas encore de document sur le serveur : on l'initialise avec les données locales.
+    if (state.contributions.length || state.values.length) await pushToFirebase();
+    startRealtimeListener();
+    return;
+  }
+
+  const lastSynced = state.sync.lastSyncedAt || '';
+  const localChanged = (state.sync.localUpdatedAt || '') > lastSynced;
+  const remoteChanged = (remote.updatedAt || '') > lastSynced;
+
+  if (localChanged && remoteChanged) {
+    state.ui.syncConflict = { remote };
+    render();
+  } else if (remoteChanged) {
+    applyRemoteData(remote);
+    render();
+    startRealtimeListener();
+  } else if (localChanged) {
+    await pushToFirebase();
+    startRealtimeListener();
+  } else {
+    startRealtimeListener();
+  }
+}
+
+function restartFirebaseSync() {
+  teardownFirebase();
+  state.ui.syncConflict = null;
+  if (firebaseReady()) reconcileFirebase();
+}
+
+/* ==================================== DERIVED DATA ==================================== */
+
+function computeChartData() {
+  const historical = buildHistoricalSeries(state.contributions, state.values);
+  const histRate = estimateHistoricalRate(state.contributions, referenceValues(state.values));
+  if (historical.length === 0) return { rows: [], histRate, lastKnownValueEntry: null, totalInvested: 0 };
+
+  const rows = historical.map(r => Object.assign({}, r));
+  const lastKnownValueEntry = state.values.length
+    ? [...state.values].sort((a, b) => a.date.localeCompare(b.date)).slice(-1)[0] : null;
+  const totalInvested = rows[rows.length - 1].investedActual;
+
+  if (!lastKnownValueEntry) return { rows, histRate, lastKnownValueEntry, totalInvested };
+
+  const bridgeDate = rows[rows.length - 1].date;
+  const bridgeInvested = rows[rows.length - 1].investedActual;
+  const bridgeValue = lastKnownValueEntry.value;
+  const rateMode = state.ui.rateMode;
+
+  const forecastRows = [];
+  const bridge = { date: bridgeDate, investedForecast: bridgeInvested };
+  if (rateMode !== 'standard' && histRate !== null) bridge.fHist = bridgeValue;
+  if (rateMode !== 'hist') STANDARD_RATES.forEach(r => { bridge['f_' + r.key] = bridgeValue; });
+  forecastRows.push(bridge);
+
+  const monthly = state.ui.projMonthlyEnabled ? (state.ui.projMonthlyAmount || 0) : 0;
+  const years = state.ui.forecastYears;
+
+  if (rateMode !== 'standard' && histRate !== null) {
+    const pts = projectForward(bridgeDate, bridgeValue, monthly, histRate, years);
+    pts.forEach((p, i) => { forecastRows[i + 1] = forecastRows[i + 1] || { date: p.date }; forecastRows[i + 1].date = p.date; forecastRows[i + 1].fHist = p.value; });
+  }
+  if (rateMode !== 'hist') {
+    STANDARD_RATES.forEach(r => {
+      const pts = projectForward(bridgeDate, bridgeValue, monthly, r.rate, years);
+      pts.forEach((p, i) => { forecastRows[i + 1] = forecastRows[i + 1] || { date: p.date }; forecastRows[i + 1].date = p.date; forecastRows[i + 1]['f_' + r.key] = p.value; });
+    });
+  }
+  const investPts = [];
+  for (let m = 1; m <= years * 12; m++) investPts.push({ date: addMonthsISO(bridgeDate, m), value: bridgeInvested + monthly * m });
+  investPts.forEach((p, i) => { forecastRows[i + 1] = forecastRows[i + 1] || { date: p.date }; forecastRows[i + 1].date = p.date; forecastRows[i + 1].investedForecast = p.value; });
+
+  return { rows: rows.concat(forecastRows), histRate, lastKnownValueEntry, totalInvested };
+}
+
+function computeRateSeries() {
+  const refValues = referenceValues(state.values);
+  const cumulative = computeCumulativeRateSeries(state.contributions, refValues);
+  const instant = computeInstantRateSeries(state.contributions, refValues);
+  const byDate = {};
+  cumulative.forEach(r => { byDate[r.date] = Object.assign(byDate[r.date] || { date: r.date }, { cumulative: r.cumulative }); });
+  instant.forEach(r => { byDate[r.date] = Object.assign(byDate[r.date] || { date: r.date }, { instant: r.instant }); });
+  return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/* ==================================== CHARTS ==================================== */
+
+let mainChart = null;
+let rateChart = null;
+
+function themeColor(varName) {
+  return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+}
+
+function buildMainChartConfig(rows, opts) {
+  const labels = rows.map(r => r.date);
+  const C = {
+    invested: themeColor('--invested'), gain: themeColor('--gain'), muted: themeColor('--muted'),
+    forecastHist: themeColor('--forecast-hist'), r2: themeColor('--forecast-r2'), r4: themeColor('--forecast-r4'),
+    r6: themeColor('--forecast-r6'), r8: themeColor('--forecast-r8'),
+  };
+  const rateColorMap = { r2: C.r2, r4: C.r4, r6: C.r6, r8: C.r8 };
+
+  const datasets = [];
+  datasets.push({
+    label: 'Capital investi',
+    data: rows.map(r => (r.investedActual !== undefined ? r.investedActual : null)),
+    borderColor: C.invested, backgroundColor: hexAlpha(C.invested, 0.16),
+    stepped: 'after', fill: true, borderWidth: 2, pointRadius: 0, spanGaps: true,
+  });
+  datasets.push({
+    label: 'Capital investi (projeté)',
+    data: rows.map(r => (r.investedForecast !== undefined ? r.investedForecast : null)),
+    borderColor: C.invested, borderDash: [4, 3], borderWidth: 1.5, fill: false, pointRadius: 0, spanGaps: true,
+  });
+  if (opts.showHist) {
+    datasets.push({
+      label: 'Taux historique', data: rows.map(r => (r.fHist !== undefined ? r.fHist : null)),
+      borderColor: C.forecastHist, borderDash: [5, 4], borderWidth: 2, fill: false, pointRadius: 0, spanGaps: true,
+    });
+  }
+  if (opts.showStandard) {
+    STANDARD_RATES.forEach(r => {
+      datasets.push({
+        label: r.label, data: rows.map(row => (row['f_' + r.key] !== undefined ? row['f_' + r.key] : null)),
+        borderColor: rateColorMap[r.key], borderDash: [5, 4], borderWidth: 1.5, fill: false, pointRadius: 0, spanGaps: true,
+      });
+    });
+  }
+  datasets.push({
+    label: 'Valeur du portefeuille',
+    data: rows.map(r => (r.portfolioActual !== undefined ? r.portfolioActual : null)),
+    borderColor: C.gain, backgroundColor: C.gain, borderWidth: 2.5, fill: false, spanGaps: true,
+    pointRadius: ctx => (ctx.raw !== null && ctx.raw !== undefined ? 3 : 0),
+  });
+
+  return {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
+          backgroundColor: themeColor('--surface2'), borderColor: themeColor('--line'), borderWidth: 1,
+          titleColor: themeColor('--muted'), bodyColor: themeColor('--text'), titleFont: { family: 'IBM Plex Mono', size: 11 },
+          bodyFont: { family: 'IBM Plex Mono', size: 11 }, padding: 8, boxPadding: 3,
+          callbacks: {
+            title: items => (items.length ? fmtDateShort(items[0].label) : ''),
+            label: ctx => ctx.dataset.label + ': ' + fmtMoney(ctx.parsed.y, opts.currency),
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false }, border: { color: C.muted },
+          ticks: { color: C.muted, font: { family: 'IBM Plex Mono', size: 10 }, autoSkip: true, maxTicksLimit: 6, maxRotation: 0, callback: (val, idx) => fmtMonthYear(labels[idx]) },
+        },
+        y: {
+          grid: { color: themeColor('--line') }, border: { display: false },
+          ticks: { color: C.muted, font: { family: 'IBM Plex Mono', size: 10 }, callback: v => Math.round(v / 1000) + 'k' },
+        },
+      },
+    },
+  };
+}
+
+function buildRateChartConfig(rows) {
+  const labels = rows.map(r => r.date);
+  const C = { gain: themeColor('--gain'), forecastHist: themeColor('--forecast-hist'), muted: themeColor('--muted') };
+  return {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Zéro', data: labels.map(() => 0), borderColor: C.muted, borderDash: [2, 2], borderWidth: 1, pointRadius: 0, fill: false, order: 9 },
+        { label: 'Taux entre relevés', data: rows.map(r => (r.instant !== undefined ? r.instant : null)), borderColor: C.gain, borderWidth: 2.2, pointRadius: 3, pointBackgroundColor: C.gain, fill: false, spanGaps: true },
+        { label: 'Moyenne cumulée', data: rows.map(r => (r.cumulative !== undefined ? r.cumulative : null)), borderColor: C.forecastHist, borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, fill: false, spanGaps: true },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          filter: item => item.dataset.label !== 'Zéro' && item.parsed.y !== null && item.parsed.y !== undefined,
+          backgroundColor: themeColor('--surface2'), borderColor: themeColor('--line'), borderWidth: 1,
+          titleColor: themeColor('--muted'), bodyColor: themeColor('--text'), titleFont: { family: 'IBM Plex Mono', size: 11 },
+          bodyFont: { family: 'IBM Plex Mono', size: 11 }, padding: 8, boxPadding: 3,
+          callbacks: {
+            title: items => (items.length ? fmtDateShort(items[0].label) : ''),
+            label: ctx => ctx.dataset.label + ': ' + fmtPct(ctx.parsed.y),
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false }, border: { color: C.muted },
+          ticks: { color: C.muted, font: { family: 'IBM Plex Mono', size: 10 }, autoSkip: true, maxTicksLimit: 6, maxRotation: 0, callback: (val, idx) => fmtMonthYear(labels[idx]) },
+        },
+        y: {
+          grid: { color: themeColor('--line') }, border: { display: false },
+          ticks: { color: C.muted, font: { family: 'IBM Plex Mono', size: 10 }, callback: v => v + '%' },
+        },
+      },
+    },
+  };
+}
+
+function initMainChart(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const { rows, histRate } = computeChartData();
+  const opts = {
+    currency: state.settings.currency,
+    showHist: state.ui.rateMode !== 'standard' && histRate !== null,
+    showStandard: state.ui.rateMode !== 'hist',
+  };
+  if (mainChart) { mainChart.destroy(); mainChart = null; }
+  mainChart = new Chart(canvas.getContext('2d'), buildMainChartConfig(rows, opts));
+}
+
+function updateMainChartLive() {
+  if (!mainChart) return;
+  const { rows, histRate } = computeChartData();
+  const opts = {
+    currency: state.settings.currency,
+    showHist: state.ui.rateMode !== 'standard' && histRate !== null,
+    showStandard: state.ui.rateMode !== 'hist',
+  };
+  const cfg = buildMainChartConfig(rows, opts);
+  mainChart.data = cfg.data;
+  mainChart.update('none');
+}
+
+function initRateChart(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const rows = computeRateSeries();
+  if (rateChart) { rateChart.destroy(); rateChart = null; }
+  rateChart = new Chart(canvas.getContext('2d'), buildRateChartConfig(rows));
+}
+
+/* ==================================== TEMPLATES ==================================== */
+
+function headerTemplate() {
+  const { lastKnownValueEntry, totalInvested } = computeChartData();
+  const currentValue = lastKnownValueEntry ? lastKnownValueEntry.value : null;
+  const gain = currentValue !== null ? currentValue - totalInvested : null;
+  const gainPct = currentValue !== null && totalInvested > 0 ? (gain / totalInvested) * 100 : null;
+  const gainColor = gain === null ? 'var(--muted)' : gain >= 0 ? 'var(--gain)' : 'var(--loss)';
+  const theme = state.settings.theme;
+
+  return '' +
+  '<div class="wrap">' +
+    '<div class="header-top">' +
+      '<span class="brand">Grand livre</span>' +
+      '<div class="header-right">' +
+        (storageOk ? '' : '<span class="storage-warn">stockage indisponible</span>') +
+        (!state.ui.isStandalone && (state.ui.canInstall || isIOSDevice()) ? '<button class="install-btn" data-action="install-app" aria-label="Installer l\'application" title="Installer l\'application">' + ICONS.download + '</button>' : '') +
+        '<button class="theme-btn" data-action="toggle-theme" aria-label="Changer de thème">' + (theme === 'light' ? ICONS.moon : ICONS.sun) + '</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="big-value">' + fmtMoney(currentValue, state.settings.currency) + '</div>' +
+    '<div class="sub-values">' +
+      '<span>Investi&nbsp;: <span class="invested-amt">' + fmtMoney(totalInvested, state.settings.currency) + '</span></span>' +
+      (gain === null ? '' : '<span style="color:' + gainColor + '">' + (gain >= 0 ? '+' : '') + fmtMoney(gain, state.settings.currency) + ' (' + fmtPct(gainPct) + ')</span>') +
+    '</div>' +
+  '</div>';
+}
+
+function tabbarTemplate() {
+  const items = [
+    { k: 'resume', l: 'Résumé', icon: ICONS.trending },
+    { k: 'journal', l: 'Journal', icon: ICONS.book },
+    { k: 'reglages', l: 'Réglages', icon: ICONS.gear },
+  ];
+  return '<div class="wrap">' + items.map(it =>
+    '<button class="tab-btn' + (state.ui.tab === it.k ? ' active' : '') + '" data-action="set-tab" data-tab="' + it.k + '">' + it.icon + '<span>' + it.l + '</span></button>'
+  ).join('') + '</div>';
+}
+
+function legendTemplate(rateMode, showForecast, histRate) {
+  const chips = [
+    { label: 'Capital investi', color: 'var(--invested)' },
+    { label: 'Valeur du portefeuille', color: 'var(--gain)' },
+  ];
+  if (showForecast) {
+    if (rateMode !== 'standard' && histRate !== null) chips.push({ label: 'Projection — taux historique', color: 'var(--forecast-hist)', dashed: true });
+    if (rateMode !== 'hist') STANDARD_RATES.forEach(r => chips.push({ label: 'Projection — ' + r.label, color: 'var(--forecast-' + r.key + ')', dashed: true }));
+  }
+  return '<div class="legend">' + chips.map(c =>
+    '<div class="legend-item" style="color:' + c.color + '"><span class="legend-swatch ' + (c.dashed ? 'dashed' : 'solid') + '"></span><span style="color:var(--muted)">' + c.label + '</span></div>'
+  ).join('') + '</div>';
+}
+
+function emptyStateTemplate(iconHtml, title, text) {
+  return '<div class="empty-state"><div class="icon">' + iconHtml + '</div><div class="title">' + title + '</div><div class="text">' + text + '</div></div>';
+}
+
+function resumeTabTemplate() {
+  const { rows, histRate, lastKnownValueEntry } = computeChartData();
+  const hasData = rows.length > 0;
+  const hasValueEntry = !!lastKnownValueEntry;
+  const valueCount = referenceValues(state.values).length;
+
+  if (!hasData) {
+    return emptyStateTemplate(ICONS.linechart, "Aucune donnée pour l'instant", "Ajoutez un versement et une valeur de portefeuille dans l'onglet Journal pour voir apparaître votre courbe.");
+  }
+
+  let html = '';
+  html += legendTemplate(state.ui.rateMode, hasValueEntry, histRate);
+  html += '<div class="card"><div class="chart-box"><canvas id="main-chart"></canvas></div></div>';
+
+  html += '<div class="controls-row">' +
+    '<label class="field">Durée de projection<select data-role="forecast-years">' +
+      [5, 10, 15, 20].map(y => '<option value="' + y + '"' + (state.ui.forecastYears === y ? ' selected' : '') + '>' + y + ' ans</option>').join('') +
+    '</select></label>' +
+    '<label class="field">Taux utilisés<select data-role="rate-mode">' +
+      '<option value="hist"' + (state.ui.rateMode === 'hist' ? ' selected' : '') + '>Historique (mes données)</option>' +
+      '<option value="standard"' + (state.ui.rateMode === 'standard' ? ' selected' : '') + '>Taux standards</option>' +
+      '<option value="both"' + (state.ui.rateMode === 'both' ? ' selected' : '') + '>Les deux</option>' +
+    '</select></label>' +
+  '</div>';
+
+  html += '<div class="toggle-row">' +
+    '<input type="checkbox" id="proj-monthly-toggle" data-role="proj-monthly-enabled"' + (state.ui.projMonthlyEnabled ? ' checked' : '') + '>' +
+    '<label for="proj-monthly-toggle">Continuer les versements mensuels dans la projection</label>' +
+    '<input type="number" min="0" data-role="proj-monthly-amount" value="' + state.ui.projMonthlyAmount + '" ' + (state.ui.projMonthlyEnabled ? '' : 'disabled') + '>' +
+  '</div>';
+
+  if (!state.ui.projMonthlyEnabled) {
+    html += '<p class="hint">Projection basée uniquement sur le montant actuellement investi, sans nouveaux versements futurs.</p>';
+  }
+  if (!hasValueEntry) {
+    html += '<p class="hint">Ajoutez au moins une valeur de portefeuille pour activer les prévisions.</p>';
+  }
+  if (hasValueEntry && state.ui.rateMode !== 'standard' && histRate === null) {
+    html += '<p class="hint">Pas encore assez de recul pour estimer un taux historique fiable — ajoutez des relevés espacés dans le temps.</p>';
+  }
+  if (hasValueEntry && histRate !== null) {
+    html += '<p class="hint">Taux annualisé estimé à partir de vos données&nbsp;: <span style="color:var(--forecast-hist)">' + fmtPct(histRate * 100) + '</span> par an (méthode simplifiée, à titre indicatif).</p>';
+  }
+
+  html += '<div class="section-block">' +
+    '<div class="section-title">Rentabilité au fil du temps</div>' +
+    '<p class="hint" style="margin-top:2px;margin-bottom:10px;">Taux annualisé estimé à chaque relevé de référence&nbsp;: en trait plein, l\'évolution entre deux relevés consécutifs ; en pointillé, la moyenne cumulée depuis le premier versement. Seuls les relevés marqués « relevé de référence » comptent ici — les autres restent visibles sur le graphique principal mais n\'influencent pas ces courbes. Les versements sont pondérés selon leur date exacte (méthode de Dietz modifiée), donc peu importe que vous notiez la valeur le jour du dépôt ou quelques jours plus tard.</p>';
+
+  if (valueCount < 2) {
+    html += emptyStateTemplate(ICONS.activity, 'Pas encore assez de relevés', "Ajoutez au moins deux valeurs de portefeuille à des dates différentes pour voir l'évolution du taux de rentabilité.");
+  } else {
+    html += '<div class="card"><div class="chart-box small"><canvas id="rate-chart"></canvas></div></div>';
+  }
+  html += '</div>';
+
+  return html;
+}
+
+function journalTabTemplate() {
+  const all = state.contributions.map(c => Object.assign({}, c, { type: 'contribution' }))
+    .concat(state.values.map(v => Object.assign({}, v, { type: 'value' })))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const filter = state.ui.journalFilter;
+  const filtered = all.filter(e => filter === 'all' || e.type === filter);
+
+  let html = '<div class="quick-row">' +
+    '<button class="quick-btn" data-action="open-form-contribution"><span style="color:var(--invested);display:flex;align-items:center">' + ICONS.plus + ICONS.piggy + '</span>Versement</button>' +
+    '<button class="quick-btn" data-action="open-form-value"><span style="color:var(--gain);display:flex;align-items:center">' + ICONS.plus + ICONS.wallet + '</span>Valeur du portefeuille</button>' +
+  '</div>';
+
+  html += '<div class="filter-row">' +
+    [{ k: 'all', l: 'Tout' }, { k: 'contribution', l: 'Versements' }, { k: 'value', l: 'Relevés' }].map(f =>
+      '<button class="filter-chip' + (filter === f.k ? ' active' : '') + '" data-action="set-filter" data-filter="' + f.k + '">' + f.l + '</button>'
+    ).join('') +
+  '</div>';
+
+  if (filtered.length === 0) {
+    html += emptyStateTemplate(ICONS.book, 'Journal vide', 'Vos versements et relevés de valeur apparaîtront ici.');
+  } else {
+    html += '<div class="entry-list">' + filtered.map(entry => {
+      const isC = entry.type === 'contribution';
+      const amount = isC ? entry.amount : entry.value;
+      const isNonRef = !isC && entry.reference === false;
+      return '<div class="entry-row">' +
+        '<div class="entry-left">' +
+          '<span class="entry-dot" style="background:' + (isC ? 'var(--invested)' : 'var(--gain)') + '"></span>' +
+          '<div><div class="entry-amount">' + fmtMoney(amount, state.settings.currency) +
+          (isNonRef ? ' <span style="font-size:9px;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 5px;vertical-align:middle;">hors calcul</span>' : '') +
+          '</div>' +
+          '<div class="entry-meta">' + (isC ? 'Versement' : 'Valeur du portefeuille') + ' · ' + fmtDateLong(entry.date) + '</div></div>' +
+        '</div>' +
+        '<div class="entry-actions">' +
+          '<button class="icon-btn" data-action="edit-entry" data-id="' + entry.id + '" data-type="' + entry.type + '">' + ICONS.pencil + '</button>' +
+          '<button class="icon-btn" data-action="delete-entry" data-id="' + entry.id + '" data-type="' + entry.type + '">' + ICONS.trash + '</button>' +
+        '</div>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+  return html;
+}
+
+function reglagesTabTemplate() {
+  const sub = state.ui.reglagesSubTab;
+  let html = '<div class="subtab-row">' +
+    '<button class="subtab-btn' + (sub === 'general' ? ' active' : '') + '" data-action="set-reglages-subtab" data-subtab="general">Général</button>' +
+    '<button class="subtab-btn' + (sub === 'firebase' ? ' active' : '') + '" data-action="set-reglages-subtab" data-subtab="firebase">' + ICONS.cloud + ' Synchronisation</button>' +
+  '</div>';
+  html += sub === 'firebase' ? reglagesFirebaseTemplate() : reglagesGeneralTemplate();
+  return html;
+}
+
+function reglagesGeneralTemplate() {
+  const s = state.settings;
+  const counts = { contributions: state.contributions.length, values: state.values.length };
+  let html = '<div class="settings-block">';
+
+  html += '<div><div class="section-title">Versement mensuel par défaut</div>' +
+    '<p class="desc">Utilisé pour préremplir vos ajouts et vos projections.</p>' +
+    '<input type="number" min="0" data-role="settings-monthly-amount" value="' + s.monthlyAmount + '"></div>';
+
+  html += '<div><div class="section-title">Devise</div>' +
+    '<select data-role="settings-currency">' +
+      '<option value="EUR"' + (s.currency === 'EUR' ? ' selected' : '') + '>Euro (€)</option>' +
+      '<option value="USD"' + (s.currency === 'USD' ? ' selected' : '') + '>Dollar ($)</option>' +
+      '<option value="GBP"' + (s.currency === 'GBP' ? ' selected' : '') + '>Livre (£)</option>' +
+    '</select></div>';
+
+  html += '<div><div class="section-title">Données</div>' +
+    '<p class="data-count">' + counts.contributions + ' versement(s) · ' + counts.values + ' relevé(s) de valeur enregistrés sur cet appareil.</p>' +
+    '<p class="storage-status" style="color:' + (storageOk ? 'var(--muted)' : 'var(--loss)') + '">' +
+      (storageOk ? 'Stockage local actif — vos données restent sur votre téléphone.' : "Le stockage persistant n'est pas disponible dans ce navigateur ; les données ne seront pas conservées.") +
+    '</p>';
+
+  if (!state.ui.confirmingReset) {
+    html += '<button class="danger-btn" data-action="confirm-reset">Réinitialiser toutes les données</button>';
+  } else {
+    html += '<div class="confirm-row">' +
+      '<button class="danger-btn" data-action="do-reset">Confirmer la suppression</button>' +
+      '<button class="secondary-btn" data-action="cancel-reset">Annuler</button>' +
+    '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function syncStatusInfo() {
+  if (!state.settings.firebaseEnabled) return { color: 'var(--muted)', label: 'Synchronisation désactivée', sub: 'Vos données restent uniquement sur cet appareil.' };
+  if (!state.settings.firebase || !state.settings.firebase.apiKey || !state.settings.firebase.projectId) {
+    return { color: 'var(--loss)', label: 'Configuration incomplète', sub: "Renseignez au moins la clé d'API et l'ID de projet." };
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return { color: 'var(--invested)', label: 'Hors ligne', sub: 'La synchronisation reprendra automatiquement dès le retour du réseau.' };
+  }
+  if (state.sync.lastError) {
+    return { color: 'var(--loss)', label: 'Erreur de synchronisation', sub: 'Code : ' + state.sync.lastError + ' — vérifiez la configuration et les règles Firestore.' };
+  }
+  if (state.ui.syncBusy) return { color: 'var(--forecast-hist)', label: 'Synchronisation en cours…', sub: '' };
+  if (state.sync.lastSyncedAt) {
+    return { color: 'var(--gain)', label: 'Synchronisé', sub: 'Dernière synchro le ' + fmtDateTime(state.sync.lastSyncedAt) };
+  }
+  return { color: 'var(--invested)', label: 'Pas encore synchronisé', sub: 'La première synchronisation aura lieu automatiquement.' };
+}
+
+function reglagesFirebaseTemplate() {
+  const s = state.settings;
+  const fb = s.firebase || DEFAULT_FIREBASE_CONFIG;
+  const status = syncStatusInfo();
+
+  let html = '<div class="settings-block">';
+
+  html += '<div class="sync-status-card">' +
+    '<span class="sync-dot" style="background:' + status.color + '"></span>' +
+    '<div class="sync-status-text"><div class="label">' + status.label + '</div>' +
+    (status.sub ? '<div class="sub">' + status.sub + '</div>' : '') + '</div>' +
+  '</div>';
+
+  html += '<div class="toggle-row" style="margin-top:14px;">' +
+    '<input type="checkbox" id="fb-enabled-toggle" data-role="firebase-enabled"' + (s.firebaseEnabled ? ' checked' : '') + '>' +
+    '<label for="fb-enabled-toggle">Activer la synchronisation Firebase</label>' +
+  '</div>';
+
+  html += '<div><div class="section-title" style="margin-top:6px;">Identifiant de synchronisation</div>' +
+    '<p class="desc">Utilisez le même identifiant sur vos autres appareils pour qu\'ils partagent les mêmes données. Gardez-le privé : toute personne qui le connaît peut lire et modifier vos données.</p>' +
+    '<div class="sync-id-row">' +
+      '<input type="text" id="sync-id-input" data-role="sync-id" value="' + escapeHtml(s.syncId) + '" style="flex:1;text-transform:uppercase;">' +
+      '<button class="secondary-btn" data-action="copy-sync-id" title="Copier">' + ICONS.copy + '</button>' +
+    '</div></div>';
+
+  html += '<div><div class="section-title">Configuration du projet Firebase</div>' +
+    '<p class="desc">Préremplie avec le projet par défaut — à modifier seulement si vous utilisez votre propre projet Firebase.</p>' +
+    ['apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId', 'measurementId'].map(k =>
+      '<label class="field" style="margin-bottom:8px;">' + k + '<input type="text" data-role="firebase-field" data-field="' + k + '" value="' + escapeHtml(fb[k] || '') + '"></label>'
+    ).join('') +
+  '</div>';
+
+  html += '<button class="primary-btn small" data-action="sync-now"' + (state.ui.syncBusy ? ' disabled' : '') + '>Synchroniser maintenant</button>';
+  html += '<button class="secondary-btn" style="margin-top:8px;" data-action="reset-firebase-config">Rétablir la configuration par défaut</button>';
+
+  html += '</div>';
+  return html;
+}
+
+
+
+function syncConflictModalTemplate() {
+  const conflict = state.ui.syncConflict;
+  if (!conflict) return '';
+  const localDate = fmtDateTime(state.sync.localUpdatedAt) || 'inconnue';
+  const remoteDate = fmtDateTime(conflict.remote.updatedAt) || 'inconnue';
+  return '<div class="modal-backdrop" data-action="postpone-conflict">' +
+    '<div class="modal-sheet" onclick="event.stopPropagation()">' +
+      '<div class="modal-head">' +
+        '<span class="modal-title">Données différentes détectées</span>' +
+        '<button class="icon-btn" data-action="postpone-conflict">' + ICONS.x + '</button>' +
+      '</div>' +
+      '<p class="hint" style="margin-top:0;">Cet appareil et le serveur ont chacun des modifications que l\'autre ne connaît pas. Quelle version voulez-vous garder ? L\'autre sera remplacée partout.</p>' +
+      '<div class="sync-status-card" style="margin-top:12px;">' +
+        '<div class="sync-status-text"><div class="label">Cet appareil</div><div class="sub">Modifié le ' + localDate + '</div></div>' +
+      '</div>' +
+      '<div class="sync-status-card" style="margin-top:8px;">' +
+        '<div class="sync-status-text"><div class="label">Serveur (autre appareil)</div><div class="sub">Modifié le ' + remoteDate + '</div></div>' +
+      '</div>' +
+      '<button class="primary-btn" data-action="use-local">Garder les données de cet appareil</button>' +
+      '<button class="secondary-btn" style="width:100%;margin-top:8px;" data-action="use-remote">Utiliser les données du serveur</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function modalTemplate() {
+  if (state.ui.syncConflict) return syncConflictModalTemplate();
+  const type = state.ui.formOpen;
+  if (!type) return '';
+  const isC = type === 'contribution';
+  const entry = state.ui.editEntry;
+  const date = entry ? entry.date : todayISO();
+  const amount = entry ? (isC ? entry.amount : entry.value) : (isC ? state.settings.monthlyAmount : '');
+  const isReference = entry ? (entry.reference !== false) : true;
+
+  let referenceField = '';
+  if (!isC) {
+    referenceField = '<div class="toggle-row" style="margin-top:14px;">' +
+      '<input type="checkbox" id="entry-reference-input"' + (isReference ? ' checked' : '') + '>' +
+      '<label for="entry-reference-input">Compter ce relevé dans le calcul du taux de rentabilité (relevé de référence)</label>' +
+    '</div>' +
+    '<p class="hint" style="margin-top:6px;">Décochez pour un pointage rapide entre deux relevés officiels — il restera visible sur le graphique mais n\'influencera pas les taux calculés.</p>';
+  }
+
+  return '<div class="modal-backdrop" data-action="close-form">' +
+    '<div class="modal-sheet" onclick="event.stopPropagation()">' +
+      '<div class="modal-head">' +
+        '<span class="modal-title">' + (entry ? 'Modifier' : 'Ajouter') + ' ' + (isC ? 'un versement' : 'une valeur de portefeuille') + '</span>' +
+        '<button class="icon-btn" data-action="close-form">' + ICONS.x + '</button>' +
+      '</div>' +
+      '<label class="field">Date<input type="date" id="entry-date-input" value="' + date + '"></label>' +
+      '<div style="height:12px"></div>' +
+      '<label class="field">' + (isC ? 'Montant versé' : 'Valeur totale du portefeuille') + '<input type="number" min="0" step="0.01" id="entry-amount-input" value="' + amount + '" placeholder="ex. 250"></label>' +
+      referenceField +
+      '<button class="primary-btn" id="entry-submit-btn" data-action="submit-form">' + (entry ? 'Enregistrer' : 'Ajouter') + '</button>' +
+    '</div>' +
+  '</div>';
+}
+
+/* ==================================== RENDER ==================================== */
+
+function render() {
+  document.documentElement.setAttribute('data-theme', state.settings.theme);
+  document.getElementById('app-header').innerHTML = headerTemplate();
+  document.getElementById('tabbar').innerHTML = tabbarTemplate();
+
+  const main = document.getElementById('main-content');
+  if (state.ui.tab === 'resume') {
+    main.innerHTML = resumeTabTemplate();
+    initMainChart('main-chart');
+    if (referenceValues(state.values).length >= 2) initRateChart('rate-chart');
+  } else if (state.ui.tab === 'journal') {
+    main.innerHTML = journalTabTemplate();
+  } else {
+    main.innerHTML = reglagesTabTemplate();
+  }
+
+  document.getElementById('modal-root').innerHTML = modalTemplate();
+  if (state.ui.formOpen) updateSubmitState();
+}
+
+function updateSubmitState() {
+  const dateEl = document.getElementById('entry-date-input');
+  const amountEl = document.getElementById('entry-amount-input');
+  const btn = document.getElementById('entry-submit-btn');
+  if (!dateEl || !amountEl || !btn) return;
+  const valid = dateEl.value && amountEl.value !== '' && !Number.isNaN(Number(amountEl.value)) && Number(amountEl.value) >= 0;
+  btn.disabled = !valid;
+}
+
+/* ==================================== EVENTS ==================================== */
+
+document.addEventListener('click', (e) => {
+  const actionEl = e.target.closest('[data-action]');
+  if (!actionEl) return;
+  const action = actionEl.getAttribute('data-action');
+
+  if (action === 'set-tab') { state.ui.tab = actionEl.getAttribute('data-tab'); render(); }
+  else if (action === 'toggle-theme') { state.settings.theme = state.settings.theme === 'light' ? 'dark' : 'light'; persist('settings'); render(); }
+  else if (action === 'install-app') { triggerInstall(); }
+  else if (action === 'open-form-contribution') { state.ui.formOpen = 'contribution'; state.ui.editEntry = null; render(); }
+  else if (action === 'open-form-value') { state.ui.formOpen = 'value'; state.ui.editEntry = null; render(); }
+  else if (action === 'close-form') { state.ui.formOpen = null; state.ui.editEntry = null; render(); }
+  else if (action === 'edit-entry') {
+    const id = actionEl.getAttribute('data-id'), type = actionEl.getAttribute('data-type');
+    const arr = type === 'contribution' ? state.contributions : state.values;
+    state.ui.editEntry = Object.assign({ type }, arr.find(x => x.id === id));
+    state.ui.formOpen = type;
+    render();
+  }
+  else if (action === 'delete-entry') {
+    deleteEntry(actionEl.getAttribute('data-type'), actionEl.getAttribute('data-id'));
+  }
+  else if (action === 'submit-form') {
+    const dateEl = document.getElementById('entry-date-input');
+    const amountEl = document.getElementById('entry-amount-input');
+    const valid = dateEl.value && amountEl.value !== '' && !Number.isNaN(Number(amountEl.value)) && Number(amountEl.value) >= 0;
+    if (!valid) return;
+    const type = state.ui.formOpen;
+    const isC = type === 'contribution';
+    let data;
+    if (isC) {
+      data = { date: dateEl.value, amount: Number(amountEl.value) };
+    } else {
+      const refEl = document.getElementById('entry-reference-input');
+      data = { date: dateEl.value, value: Number(amountEl.value), reference: refEl ? refEl.checked : true };
+    }
+    if (state.ui.editEntry) updateEntry(type, state.ui.editEntry.id, data);
+    else if (isC) addContribution(data);
+    else addValue(data);
+    state.ui.formOpen = null; state.ui.editEntry = null;
+    render();
+  }
+  else if (action === 'set-filter') { state.ui.journalFilter = actionEl.getAttribute('data-filter'); render(); }
+  else if (action === 'confirm-reset') { state.ui.confirmingReset = true; render(); }
+  else if (action === 'cancel-reset') { state.ui.confirmingReset = false; render(); }
+  else if (action === 'do-reset') {
+    state.contributions = []; state.values = [];
+    persist('contributions'); persist('values');
+    markDataChanged();
+    state.ui.confirmingReset = false;
+    render();
+  }
+  else if (action === 'set-reglages-subtab') { state.ui.reglagesSubTab = actionEl.getAttribute('data-subtab'); render(); }
+  else if (action === 'copy-sync-id') {
+    const input = document.getElementById('sync-id-input');
+    if (input && navigator.clipboard) navigator.clipboard.writeText(input.value).catch(() => {});
+  }
+  else if (action === 'sync-now') { reconcileFirebase(); }
+  else if (action === 'reset-firebase-config') {
+    state.settings.firebase = Object.assign({}, DEFAULT_FIREBASE_CONFIG);
+    persist('settings');
+    restartFirebaseSync();
+    render();
+  }
+  else if (action === 'use-local') {
+    state.ui.syncConflict = null;
+    pushToFirebase().then(() => { startRealtimeListener(); render(); });
+    render();
+  }
+  else if (action === 'use-remote') {
+    const remote = state.ui.syncConflict && state.ui.syncConflict.remote;
+    state.ui.syncConflict = null;
+    if (remote) { applyRemoteData(remote); startRealtimeListener(); }
+    render();
+  }
+  else if (action === 'postpone-conflict') { state.ui.syncConflict = null; render(); }
+});
+
+document.addEventListener('change', (e) => {
+  const role = e.target.getAttribute && e.target.getAttribute('data-role');
+  if (!role) return;
+  if (role === 'forecast-years') { state.ui.forecastYears = Number(e.target.value); render(); }
+  else if (role === 'rate-mode') { state.ui.rateMode = e.target.value; render(); }
+  else if (role === 'proj-monthly-enabled') { state.ui.projMonthlyEnabled = e.target.checked; render(); }
+  else if (role === 'settings-currency') { state.settings.currency = e.target.value; persist('settings'); markDataChanged(); render(); }
+  else if (role === 'firebase-enabled') {
+    state.settings.firebaseEnabled = e.target.checked;
+    persist('settings');
+    if (state.settings.firebaseEnabled) restartFirebaseSync(); else teardownFirebase();
+    render();
+  }
+});
+
+document.addEventListener('input', (e) => {
+  const role = e.target.getAttribute && e.target.getAttribute('data-role');
+  if (role === 'proj-monthly-amount') {
+    state.ui.projMonthlyAmount = Number(e.target.value) || 0;
+    updateMainChartLive();
+  } else if (role === 'settings-monthly-amount') {
+    state._monthlyDraft = Number(e.target.value) || 0;
+  } else if (role === 'sync-id') {
+    state._syncIdDraft = e.target.value.trim().toUpperCase();
+  } else if (role === 'firebase-field') {
+    state._firebaseDraft = state._firebaseDraft || {};
+    state._firebaseDraft[e.target.getAttribute('data-field')] = e.target.value.trim();
+  }
+  if (e.target.id === 'entry-date-input' || e.target.id === 'entry-amount-input') {
+    updateSubmitState();
+  }
+});
+
+document.addEventListener('blur', (e) => {
+  const role = e.target.getAttribute && e.target.getAttribute('data-role');
+  if (role === 'settings-monthly-amount') {
+    const v = state._monthlyDraft !== undefined ? state._monthlyDraft : state.settings.monthlyAmount;
+    state.settings.monthlyAmount = v;
+    persist('settings');
+    markDataChanged();
+    render();
+  } else if (role === 'sync-id') {
+    const v = (state._syncIdDraft !== undefined ? state._syncIdDraft : state.settings.syncId).trim();
+    if (v && v !== state.settings.syncId) {
+      state.settings.syncId = v;
+      persist('settings');
+      restartFirebaseSync();
+      render();
+    }
+  } else if (role === 'firebase-field') {
+    if (state._firebaseDraft) {
+      state.settings.firebase = Object.assign({}, state.settings.firebase, state._firebaseDraft);
+      state._firebaseDraft = null;
+      persist('settings');
+      restartFirebaseSync();
+      render();
+    }
+  }
+}, true);
+
+/* ==================================== PWA ==================================== */
+
+function isIOSDevice() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+}
+function detectStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+state.ui.isStandalone = detectStandalone();
+
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  state.ui.canInstall = true;
+  render();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  state.ui.canInstall = false;
+  state.ui.isStandalone = true;
+  render();
+});
+
+async function triggerInstall() {
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    try { await deferredInstallPrompt.userChoice; } catch (e) {}
+    deferredInstallPrompt = null;
+    state.ui.canInstall = false;
+    render();
+  } else if (isIOSDevice()) {
+    alert("Pour installer l'application : appuyez sur le bouton Partager de Safari, puis « Sur l'écran d'accueil ».");
+  }
+}
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+
+/* ==================================== INIT ==================================== */
+render();
+if (firebaseReady()) reconcileFirebase();
+
+</script>
+</body>
+</html>
