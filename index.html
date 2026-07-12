@@ -918,9 +918,29 @@ function buildRateChartConfig(rows) {
   };
 }
 
+function chartLibAvailable() {
+  return typeof Chart !== 'undefined';
+}
+
+// Recharge dynamiquement Chart.js si le <script> du <head> n'a pas pu se
+// charger (réseau restreint, bloqueur, etc.) — utilisé par le bouton « Réessayer ».
+let chartLibLoading = null;
+function loadChartLib() {
+  if (chartLibAvailable()) return Promise.resolve(true);
+  if (chartLibLoading) return chartLibLoading;
+  chartLibLoading = new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';
+    s.onload = () => resolve(true);
+    s.onerror = () => resolve(false);
+    document.head.appendChild(s);
+  }).finally(() => { chartLibLoading = null; });
+  return chartLibLoading;
+}
+
 function initMainChart(canvasId) {
   const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
+  if (!canvas || !chartLibAvailable()) return;
   const { rows, histRate } = computeChartData();
   const opts = {
     currency: state.settings.currency,
@@ -932,7 +952,7 @@ function initMainChart(canvasId) {
 }
 
 function updateMainChartLive() {
-  if (!mainChart) return;
+  if (!mainChart || !chartLibAvailable()) return;
   const { rows, histRate } = computeChartData();
   const opts = {
     currency: state.settings.currency,
@@ -946,7 +966,7 @@ function updateMainChartLive() {
 
 function initRateChart(canvasId) {
   const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
+  if (!canvas || !chartLibAvailable()) return;
   const rows = computeRateSeries();
   if (rateChart) { rateChart.destroy(); rateChart = null; }
   rateChart = new Chart(canvas.getContext('2d'), buildRateChartConfig(rows));
@@ -1019,6 +1039,15 @@ function emptyStateTemplate(iconHtml, title, text) {
   return '<div class="empty-state"><div class="icon">' + iconHtml + '</div><div class="title">' + title + '</div><div class="text">' + text + '</div></div>';
 }
 
+function chartUnavailableTemplate() {
+  return '<div class="empty-state">' +
+    '<div class="icon">' + ICONS.linechart + '</div>' +
+    '<div class="title">Graphique indisponible</div>' +
+    '<div class="text">La librairie de graphiques n\'a pas pu se charger (réseau restreint ou bloqué). Vos données restent bien enregistrées.</div>' +
+    '<button class="secondary-btn" style="margin-top:12px;" data-action="retry-chartjs">Réessayer</button>' +
+  '</div>';
+}
+
 function resumeTabTemplate() {
   const { rows, histRate, lastKnownValueEntry } = computeChartData();
   const hasData = rows.length > 0;
@@ -1031,7 +1060,11 @@ function resumeTabTemplate() {
 
   let html = '';
   html += legendTemplate(state.ui.rateMode, hasValueEntry, histRate);
-  html += '<div class="card"><div class="chart-box"><canvas id="main-chart"></canvas></div></div>';
+  if (chartLibAvailable()) {
+    html += '<div class="card"><div class="chart-box"><canvas id="main-chart"></canvas></div></div>';
+  } else {
+    html += chartUnavailableTemplate();
+  }
 
   html += '<div class="controls-row">' +
     '<label class="field">Durée de projection<select data-role="forecast-years">' +
@@ -1069,6 +1102,8 @@ function resumeTabTemplate() {
 
   if (valueCount < 2) {
     html += emptyStateTemplate(ICONS.activity, 'Pas encore assez de relevés', "Ajoutez au moins deux valeurs de portefeuille à des dates différentes pour voir l'évolution du taux de rentabilité.");
+  } else if (!chartLibAvailable()) {
+    html += chartUnavailableTemplate();
   } else {
     html += '<div class="card"><div class="chart-box small"><canvas id="rate-chart"></canvas></div></div>';
   }
@@ -1351,6 +1386,12 @@ document.addEventListener('click', (e) => {
 function handleClickAction(action, actionEl, clickTarget) {
   if (action === 'set-tab') { state.ui.tab = actionEl.getAttribute('data-tab'); render(); }
   else if (action === 'dismiss-error') { state.ui.errorBanner = null; render(); }
+  else if (action === 'retry-chartjs') {
+    loadChartLib().then((ok) => {
+      if (!ok) showError("Le chargement de la librairie de graphiques a échoué à nouveau — vérifiez la connexion réseau.");
+      render();
+    });
+  }
   else if (action === 'toggle-theme') { state.settings.theme = state.settings.theme === 'light' ? 'dark' : 'light'; persist('settings'); render(); }
   else if (action === 'install-app') { triggerInstall(); }
   else if (action === 'open-form-contribution') { state.ui.formOpen = 'contribution'; state.ui.editEntry = null; render(); }
