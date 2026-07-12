@@ -586,39 +586,61 @@ function startRealtimeListener() {
 // Ne sollicite l'utilisateur que si les deux côtés ont divergé depuis la dernière
 // synchro réussie — sinon la fusion la plus sûre est appliquée automatiquement.
 async function reconcileFirebase() {
-  if (!firebaseReady()) return;
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-  state.ui.syncBusy = true;
-  render();
-
-  const remote = await fetchFirebaseDoc();
-  state.ui.syncBusy = false;
-
-  if (!remote) {
-    // Pas de document sur le serveur, ou erreur de lecture (voir state.sync.lastError) :
-    // on tente quand même d'envoyer nos données locales si on en a.
-    if (state.contributions.length || state.values.length) await pushToFirebase();
-    startRealtimeListener();
+  if (!state.settings.firebaseEnabled) {
+    state.sync.lastError = '';
+    return; // désactivé intentionnellement, pas une erreur — le statut l'indique déjà
+  }
+  if (!state.settings.firebase || !state.settings.firebase.apiKey || !state.settings.firebase.projectId || !state.settings.syncId) {
+    state.sync.lastError = 'config-incomplete';
+    persist('sync');
+    render();
+    return;
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    state.sync.lastError = 'offline';
+    persist('sync');
     render();
     return;
   }
 
-  const lastSynced = state.sync.lastSyncedAt || '';
-  const localChanged = (state.sync.localUpdatedAt || '') > lastSynced;
-  const remoteChanged = (remote.updatedAt || '') > lastSynced;
-
-  if (localChanged && remoteChanged) {
-    state.ui.syncConflict = { remote };
-  } else if (remoteChanged) {
-    applyRemoteData(remote);
-    startRealtimeListener();
-  } else if (localChanged) {
-    await pushToFirebase();
-    startRealtimeListener();
-  } else {
-    startRealtimeListener();
-  }
+  state.ui.syncBusy = true;
+  state.sync.lastError = '';
   render();
+
+  try {
+    const remote = await fetchFirebaseDoc();
+
+    if (!remote) {
+      // Pas de document sur le serveur, ou erreur de lecture (voir state.sync.lastError) :
+      // on tente quand même d'envoyer nos données locales si on en a.
+      if (state.contributions.length || state.values.length) await pushToFirebase();
+      startRealtimeListener();
+      return;
+    }
+
+    const lastSynced = state.sync.lastSyncedAt || '';
+    const localChanged = (state.sync.localUpdatedAt || '') > lastSynced;
+    const remoteChanged = (remote.updatedAt || '') > lastSynced;
+
+    if (localChanged && remoteChanged) {
+      state.ui.syncConflict = { remote };
+    } else if (remoteChanged) {
+      applyRemoteData(remote);
+      startRealtimeListener();
+    } else if (localChanged) {
+      await pushToFirebase();
+      startRealtimeListener();
+    } else {
+      startRealtimeListener();
+    }
+  } catch (e) {
+    console.error('Firebase reconcile error', e);
+    state.sync.lastError = (e && e.code) || 'unexpected-error';
+    persist('sync');
+  } finally {
+    state.ui.syncBusy = false;
+    render();
+  }
 }
 
 function restartFirebaseSync() {
@@ -1047,14 +1069,20 @@ function reglagesGeneralTemplate() {
 
 function syncStatusInfo() {
   if (!state.settings.firebaseEnabled) return { color: 'var(--muted)', label: 'Synchronisation désactivée', sub: 'Vos données restent uniquement sur cet appareil.' };
-  if (!state.settings.firebase || !state.settings.firebase.apiKey || !state.settings.firebase.projectId) {
-    return { color: 'var(--loss)', label: 'Configuration incomplète', sub: "Renseignez au moins la clé d'API et l'ID de projet." };
+  if (!state.settings.firebase || !state.settings.firebase.apiKey || !state.settings.firebase.projectId || !state.settings.syncId) {
+    return { color: 'var(--loss)', label: 'Configuration incomplète', sub: "Renseignez au moins la clé d'API, l'ID de projet, et un identifiant de synchronisation." };
   }
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return { color: 'var(--invested)', label: 'Hors ligne', sub: 'La synchronisation reprendra automatiquement dès le retour du réseau.' };
   }
   if (state.sync.lastError) {
-    return { color: 'var(--loss)', label: 'Erreur de synchronisation', sub: 'Code : ' + state.sync.lastError + ' — vérifiez la configuration et les règles Firestore.' };
+    const messages = {
+      'sdk-not-loaded': "La librairie Firebase n'a pas pu se charger (vérifiez la connexion internet et rechargez la page).",
+      'permission-denied': "Accès refusé par Firestore — les règles de sécurité du projet doivent autoriser la lecture/écriture.",
+      'unavailable': "Le service Firestore est momentanément injoignable — nouvel essai au prochain lancement ou via « Synchroniser maintenant ».",
+    };
+    const sub = messages[state.sync.lastError] || ('Code : ' + state.sync.lastError + ' — vérifiez la configuration et les règles Firestore.');
+    return { color: 'var(--loss)', label: 'Erreur de synchronisation', sub };
   }
   if (state.ui.syncBusy) return { color: 'var(--forecast-hist)', label: 'Synchronisation en cours…', sub: '' };
   if (state.sync.lastSyncedAt) {
