@@ -23,12 +23,12 @@
   :root[data-theme="light"] {
     --ink: #F6F4EE; --surface: #FFFFFF; --surface2: #F1EEE5; --line: #DEDACB;
     --text: #20241F; --muted: #6E7A70; --gain: #3C8A5F; --loss: #B0553A; --invested: #AD7A2C;
-    --forecast-hist: #4C61A3; --forecast-r2: #5B6B5D; --forecast-r4: #AD7A2C; --forecast-r6: #3C8A5F; --forecast-r8: #B0553A;
+    --forecast-hist: #3E5C76; --forecast-r2: #7C93C9; --forecast-r4: #9B7CC9; --forecast-r6: #C97CAE; --forecast-r8: #C9707C;
   }
   :root[data-theme="dark"] {
     --ink: #0F1613; --surface: #161F1B; --surface2: #1D2823; --line: #2A3A33;
     --text: #EDEAE0; --muted: #8CA093; --gain: #6FBF8B; --loss: #C97B63; --invested: #D9A05B;
-    --forecast-hist: #7C93C9; --forecast-r2: #77897C; --forecast-r4: #D9A05B; --forecast-r6: #6FBF8B; --forecast-r8: #C97B63;
+    --forecast-hist: #6C89B0; --forecast-r2: #8FA8DE; --forecast-r4: #B08FDE; --forecast-r6: #DE8FC0; --forecast-r8: #DE8F8F;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -1065,6 +1065,32 @@ function chartUnavailableTemplate() {
   '</div>';
 }
 
+function forecastSummaryTemplate(rows, histRate, currency, rateMode, years) {
+  const last = rows[rows.length - 1];
+  if (!last) return '';
+  const items = [];
+  if (rateMode !== 'standard' && histRate !== null && last.fHist !== undefined) {
+    items.push({ label: 'Historique (' + fmtPct(histRate * 100) + ')', color: 'var(--forecast-hist)', value: last.fHist });
+  }
+  if (rateMode !== 'hist') {
+    STANDARD_RATES.forEach(r => {
+      const v = last['f_' + r.key];
+      if (v !== undefined) items.push({ label: r.label, color: 'var(--forecast-' + r.key + ')', value: v });
+    });
+  }
+  if (!items.length) return '';
+  items.sort((a, b) => a.value - b.value);
+  return '<div class="card" style="padding:12px;margin-top:10px;">' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;">Valeur projetée dans ' + years + ' ans, du plus bas au plus haut&nbsp;:</div>' +
+    items.map(it =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px;">' +
+        '<span style="display:flex;align-items:center;gap:6px;color:var(--text);"><span style="width:8px;height:8px;border-radius:999px;background:' + it.color + ';display:inline-block;"></span>' + it.label + '</span>' +
+        '<span style="font-family:\'IBM Plex Mono\',monospace;color:var(--text);">' + fmtMoney(it.value, currency) + '</span>' +
+      '</div>'
+    ).join('') +
+  '</div>';
+}
+
 function resumeTabTemplate() {
   const { rows, histRate, lastKnownValueEntry } = computeChartData();
   const hasData = rows.length > 0;
@@ -1082,6 +1108,7 @@ function resumeTabTemplate() {
   } else {
     html += chartUnavailableTemplate();
   }
+  if (hasValueEntry) html += forecastSummaryTemplate(rows, histRate, state.settings.currency, state.ui.rateMode, state.ui.forecastYears);
 
   html += '<div class="controls-row">' +
     '<label class="field">Durée de projection<select data-role="forecast-years">' +
