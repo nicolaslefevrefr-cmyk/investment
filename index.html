@@ -156,9 +156,17 @@
   .primary-btn:disabled { opacity: .5; cursor: default; }
 
   .chartjs-tooltip-date { color: var(--muted); margin-bottom: 4px; }
+
+  .error-banner {
+    position: sticky; top: 0; z-index: 60; background: var(--loss); color: #fff;
+    padding: 10px 16px; font-size: 12px; line-height: 1.5; display: flex; align-items: flex-start; gap: 10px;
+  }
+  .error-banner .msg { flex: 1; word-break: break-word; }
+  .error-banner button { background: rgba(255,255,255,.2); border: none; border-radius: 6px; color: #fff; padding: 4px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0; }
 </style>
 </head>
 <body>
+  <div id="error-banner-root"></div>
   <header class="app-header" id="app-header"></header>
   <main><div class="wrap">
     <section class="tab-panel" id="main-content"></section>
@@ -190,6 +198,23 @@ const ICONS = {
   cloud: icon('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10Z"/>', 16),
   copy: icon('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 14),
 };
+
+/* ============================== GESTION D'ERREURS ============================== */
+// alert() est souvent silencieusement bloqué dans une PWA installée en mode
+// standalone (notamment sur iOS) : on utilise donc une bannière visible dans
+// l'app plutôt que la boîte de dialogue native, pour être sûr que les erreurs
+// sont réellement visibles au lieu d'échouer sans aucun signal.
+function showError(msg) {
+  console.error(msg);
+  try { state.ui.errorBanner = String(msg); render(); } catch (e) { /* état pas encore prêt */ }
+}
+window.addEventListener('error', (e) => {
+  showError((e.error && e.error.message) || e.message || 'Erreur inconnue');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  showError((r && r.message) ? r.message : String(r));
+});
 
 /* ============================== HELPERS ============================== */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -418,6 +443,7 @@ const state = {
     syncBusy: false,
     canInstall: false,
     isStandalone: false,
+    errorBanner: null,
   },
 };
 state.ui.projMonthlyAmount = state.settings.monthlyAmount || 0;
@@ -928,6 +954,16 @@ function initRateChart(canvasId) {
 
 /* ==================================== TEMPLATES ==================================== */
 
+function renderErrorBanner() {
+  const el = document.getElementById('error-banner-root');
+  if (!el) return;
+  if (!state.ui.errorBanner) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="error-banner">' +
+    '<span class="msg">' + escapeHtml(state.ui.errorBanner) + '</span>' +
+    '<button data-action="dismiss-error">Fermer</button>' +
+  '</div>';
+}
+
 function headerTemplate() {
   const { lastKnownValueEntry, totalInvested } = computeChartData();
   const currentValue = lastKnownValueEntry ? lastKnownValueEntry.value : null;
@@ -1210,7 +1246,7 @@ function syncConflictModalTemplate() {
   const localDate = fmtDateTime(state.sync.localUpdatedAt) || 'inconnue';
   const remoteDate = fmtDateTime(conflict.remote.updatedAt) || 'inconnue';
   return '<div class="modal-backdrop" data-action="postpone-conflict">' +
-    '<div class="modal-sheet" onclick="event.stopPropagation()">' +
+    '<div class="modal-sheet">' +
       '<div class="modal-head">' +
         '<span class="modal-title">Données différentes détectées</span>' +
         '<button class="icon-btn" data-action="postpone-conflict">' + ICONS.x + '</button>' +
@@ -1248,7 +1284,7 @@ function modalTemplate() {
   }
 
   return '<div class="modal-backdrop" data-action="close-form">' +
-    '<div class="modal-sheet" onclick="event.stopPropagation()">' +
+    '<div class="modal-sheet">' +
       '<div class="modal-head">' +
         '<span class="modal-title">' + (entry ? 'Modifier' : 'Ajouter') + ' ' + (isC ? 'un versement' : 'une valeur de portefeuille') + '</span>' +
         '<button class="icon-btn" data-action="close-form">' + ICONS.x + '</button>' +
@@ -1268,6 +1304,7 @@ function render() {
   document.documentElement.setAttribute('data-theme', state.settings.theme);
   document.getElementById('app-header').innerHTML = headerTemplate();
   document.getElementById('tabbar').innerHTML = tabbarTemplate();
+  renderErrorBanner();
 
   const main = document.getElementById('main-content');
   if (state.ui.tab === 'resume') {
@@ -1304,20 +1341,24 @@ document.addEventListener('click', (e) => {
   const action = actionEl.getAttribute('data-action');
 
   try {
-    handleClickAction(action, actionEl);
+    handleClickAction(action, actionEl, e.target);
   } catch (err) {
     console.error('Erreur lors du traitement du clic (' + action + ')', err);
-    alert("Une erreur inattendue s'est produite (" + action + ") : " + (err && err.message ? err.message : err) + "\nOuvrez la console du navigateur pour plus de détails.");
+    showError('Action « ' + action + ' » : ' + (err && err.message ? err.message : err));
   }
 });
 
-function handleClickAction(action, actionEl) {
+function handleClickAction(action, actionEl, clickTarget) {
   if (action === 'set-tab') { state.ui.tab = actionEl.getAttribute('data-tab'); render(); }
+  else if (action === 'dismiss-error') { state.ui.errorBanner = null; render(); }
   else if (action === 'toggle-theme') { state.settings.theme = state.settings.theme === 'light' ? 'dark' : 'light'; persist('settings'); render(); }
   else if (action === 'install-app') { triggerInstall(); }
   else if (action === 'open-form-contribution') { state.ui.formOpen = 'contribution'; state.ui.editEntry = null; render(); }
   else if (action === 'open-form-value') { state.ui.formOpen = 'value'; state.ui.editEntry = null; render(); }
-  else if (action === 'close-form') { state.ui.formOpen = null; state.ui.editEntry = null; render(); }
+  else if (action === 'close-form') {
+    if (actionEl.classList.contains('modal-backdrop') && clickTarget.closest('.modal-sheet')) return;
+    state.ui.formOpen = null; state.ui.editEntry = null; render();
+  }
   else if (action === 'edit-entry') {
     const id = actionEl.getAttribute('data-id'), type = actionEl.getAttribute('data-type');
     const arr = type === 'contribution' ? state.contributions : state.values;
@@ -1385,7 +1426,10 @@ function handleClickAction(action, actionEl) {
     if (remote) { applyRemoteData(remote); startRealtimeListener(); }
     render();
   }
-  else if (action === 'postpone-conflict') { state.ui.syncConflict = null; render(); }
+  else if (action === 'postpone-conflict') {
+    if (actionEl.classList.contains('modal-backdrop') && clickTarget.closest('.modal-sheet')) return;
+    state.ui.syncConflict = null; render();
+  }
 }
 
 document.addEventListener('change', (e) => {
@@ -1480,7 +1524,7 @@ async function triggerInstall() {
     state.ui.canInstall = false;
     render();
   } else if (isIOSDevice()) {
-    alert("Pour installer l'application : appuyez sur le bouton Partager de Safari, puis « Sur l'écran d'accueil ».");
+    showError("Pour installer l'application : appuyez sur le bouton Partager de Safari, puis « Sur l'écran d'accueil ».");
   }
 }
 
