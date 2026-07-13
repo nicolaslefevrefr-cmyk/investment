@@ -197,6 +197,7 @@ const ICONS = {
   download: icon('<path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><path d="M5 20h14"/>', 14),
   cloud: icon('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10Z"/>', 16),
   copy: icon('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 14),
+  calc: icon('<rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="11" x2="8" y2="11.01"/><line x1="12" y1="11" x2="12" y2="11.01"/><line x1="16" y1="11" x2="16" y2="11.01"/><line x1="8" y1="15" x2="8" y2="15.01"/><line x1="12" y1="15" x2="12" y2="15.01"/><line x1="16" y1="15" x2="16" y2="15.01"/><line x1="8" y1="19" x2="8" y2="19.01"/><line x1="12" y1="19" x2="16" y2="19"/>', 18),
 };
 
 /* ============================== GESTION D'ERREURS ============================== */
@@ -405,6 +406,26 @@ function projectForward(startDate, startValue, monthlyAmount, annualRate, years)
   return points;
 }
 
+// Simulation rétrospective : « si le marché avait fait exactement ce taux fixe,
+// avec MES vrais versements aux vraies dates, où en serais-je ? ». Contrairement
+// à projectForward (qui suppose un versement mensuel hypothétique dans le futur),
+// ceci rejoue le calendrier réel de versements sur la période déjà écoulée.
+function computeBacktestSeries(contributions, annualRate, dates) {
+  const sorted = [...contributions].sort((a, b) => a.date.localeCompare(b.date));
+  let balance = 0;
+  let lastDate = dates.length ? dates[0] : null;
+  let ci = 0;
+  const result = [];
+  dates.forEach(d => {
+    const days = daysBetween(lastDate, d);
+    if (days > 0) balance *= Math.pow(1 + annualRate, days / 365);
+    lastDate = d;
+    while (ci < sorted.length && sorted[ci].date <= d) { balance += sorted[ci].amount; ci++; }
+    result.push({ date: d, value: balance });
+  });
+  return result;
+}
+
 const STANDARD_RATES = [
   { key: 'r2', label: '2 %', rate: 0.02 },
   { key: 'r4', label: '4 %', rate: 0.04 },
@@ -477,6 +498,7 @@ const state = {
     tab: 'resume',
     forecastYears: 10,
     rateMode: 'both',
+    chartMode: 'forecast', // 'forecast' | 'historical'
     projMonthlyEnabled: true,
     projMonthlyAmount: 0,
     journalFilter: 'all',
@@ -826,6 +848,37 @@ function computeChartData() {
   return { rows: rows.concat(forecastRows), histRate, lastKnownValueEntry, totalInvested };
 }
 
+// Mode « historique » : au lieu de projeter dans le futur, on rejoue les taux
+// fixes (2/4/6/8 % et le taux XIRR calculé) sur la période déjà écoulée, avec
+// EXACTEMENT les mêmes versements aux mêmes dates que la réalité — pour
+// comparer directement la performance réelle à des repères simples.
+function computeBacktestChartData() {
+  const historical = buildHistoricalSeries(state.contributions, state.values);
+  const histRate = estimateHistoricalRate(state.contributions, referenceValues(state.values));
+  if (historical.length === 0) return { rows: [], histRate, lastKnownValueEntry: null, totalInvested: 0 };
+
+  const rows = historical.map(r => Object.assign({}, r));
+  const lastKnownValueEntry = state.values.length
+    ? [...state.values].sort((a, b) => a.date.localeCompare(b.date)).slice(-1)[0] : null;
+  const totalInvested = rows[rows.length - 1].investedActual;
+
+  const dates = rows.map(r => r.date);
+  const rateMode = state.ui.rateMode;
+
+  if (rateMode !== 'standard' && histRate !== null) {
+    const pts = computeBacktestSeries(state.contributions, histRate, dates);
+    pts.forEach((p, i) => { rows[i].bHist = p.value; });
+  }
+  if (rateMode !== 'hist') {
+    STANDARD_RATES.forEach(r => {
+      const pts = computeBacktestSeries(state.contributions, r.rate, dates);
+      pts.forEach((p, i) => { rows[i]['b_' + r.key] = p.value; });
+    });
+  }
+
+  return { rows, histRate, lastKnownValueEntry, totalInvested };
+}
+
 function computeRateSeries() {
   const refValues = referenceValues(state.values);
   const cumulative = computeCumulativeRateSeries(state.contributions, refValues);
@@ -882,6 +935,76 @@ function buildMainChartConfig(rows, opts) {
   }
   datasets.push({
     label: 'Valeur du portefeuille',
+    data: rows.map(r => (r.portfolioActual !== undefined ? r.portfolioActual : null)),
+    borderColor: C.gain, backgroundColor: C.gain, borderWidth: 2.5, fill: false, spanGaps: true,
+    pointRadius: ctx => (ctx.raw !== null && ctx.raw !== undefined ? 3 : 0),
+  });
+
+  return {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
+          backgroundColor: themeColor('--surface2'), borderColor: themeColor('--line'), borderWidth: 1,
+          titleColor: themeColor('--muted'), bodyColor: themeColor('--text'), titleFont: { family: 'IBM Plex Mono', size: 11 },
+          bodyFont: { family: 'IBM Plex Mono', size: 11 }, padding: 8, boxPadding: 3,
+          callbacks: {
+            title: items => (items.length ? fmtDateShort(items[0].label) : ''),
+            label: ctx => ctx.dataset.label + ': ' + fmtMoney(ctx.parsed.y, opts.currency),
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false }, border: { color: C.muted },
+          ticks: { color: C.muted, font: { family: 'IBM Plex Mono', size: 10 }, autoSkip: true, maxTicksLimit: 6, maxRotation: 0, callback: (val, idx) => fmtMonthYear(labels[idx]) },
+        },
+        y: {
+          grid: { color: themeColor('--line') }, border: { display: false },
+          ticks: { color: C.muted, font: { family: 'IBM Plex Mono', size: 10 }, callback: v => Math.round(v / 1000) + 'k' },
+        },
+      },
+    },
+  };
+}
+
+function buildBacktestChartConfig(rows, opts) {
+  const labels = rows.map(r => r.date);
+  const C = {
+    invested: themeColor('--invested'), gain: themeColor('--gain'), muted: themeColor('--muted'),
+    forecastHist: themeColor('--forecast-hist'), r2: themeColor('--forecast-r2'), r4: themeColor('--forecast-r4'),
+    r6: themeColor('--forecast-r6'), r8: themeColor('--forecast-r8'),
+  };
+  const rateColorMap = { r2: C.r2, r4: C.r4, r6: C.r6, r8: C.r8 };
+
+  const datasets = [];
+  datasets.push({
+    label: 'Capital investi',
+    data: rows.map(r => (r.investedActual !== undefined ? r.investedActual : null)),
+    borderColor: C.invested, backgroundColor: hexAlpha(C.invested, 0.16),
+    stepped: 'after', fill: true, borderWidth: 2, pointRadius: 0, spanGaps: true,
+  });
+  if (opts.showHist) {
+    datasets.push({
+      label: 'Si historique (' + fmtPct((opts.histRate || 0) * 100) + ')', data: rows.map(r => (r.bHist !== undefined ? r.bHist : null)),
+      borderColor: C.forecastHist, borderDash: [5, 4], borderWidth: 2, fill: false, pointRadius: 0, spanGaps: true,
+    });
+  }
+  if (opts.showStandard) {
+    STANDARD_RATES.forEach(r => {
+      datasets.push({
+        label: 'Si ' + r.label, data: rows.map(row => (row['b_' + r.key] !== undefined ? row['b_' + r.key] : null)),
+        borderColor: rateColorMap[r.key], borderDash: [5, 4], borderWidth: 1.5, fill: false, pointRadius: 0, spanGaps: true,
+      });
+    });
+  }
+  datasets.push({
+    label: 'Valeur réelle du portefeuille',
     data: rows.map(r => (r.portfolioActual !== undefined ? r.portfolioActual : null)),
     borderColor: C.gain, backgroundColor: C.gain, borderWidth: 2.5, fill: false, spanGaps: true,
     pointRadius: ctx => (ctx.raw !== null && ctx.raw !== undefined ? 3 : 0),
@@ -1003,25 +1126,46 @@ async function loadChartLib() {
 function initMainChart(canvasId) {
   const canvas = document.getElementById(canvasId);
   if (!canvas || !chartLibAvailable()) return;
-  const { rows, histRate } = computeChartData();
-  const opts = {
-    currency: state.settings.currency,
-    showHist: state.ui.rateMode !== 'standard' && histRate !== null,
-    showStandard: state.ui.rateMode !== 'hist',
-  };
   if (mainChart) { mainChart.destroy(); mainChart = null; }
-  mainChart = new Chart(canvas.getContext('2d'), buildMainChartConfig(rows, opts));
+  if (state.ui.chartMode === 'historical') {
+    const { rows, histRate } = computeBacktestChartData();
+    const opts = {
+      currency: state.settings.currency, histRate,
+      showHist: state.ui.rateMode !== 'standard' && histRate !== null,
+      showStandard: state.ui.rateMode !== 'hist',
+    };
+    mainChart = new Chart(canvas.getContext('2d'), buildBacktestChartConfig(rows, opts));
+  } else {
+    const { rows, histRate } = computeChartData();
+    const opts = {
+      currency: state.settings.currency,
+      showHist: state.ui.rateMode !== 'standard' && histRate !== null,
+      showStandard: state.ui.rateMode !== 'hist',
+    };
+    mainChart = new Chart(canvas.getContext('2d'), buildMainChartConfig(rows, opts));
+  }
 }
 
 function updateMainChartLive() {
   if (!mainChart || !chartLibAvailable()) return;
-  const { rows, histRate } = computeChartData();
-  const opts = {
-    currency: state.settings.currency,
-    showHist: state.ui.rateMode !== 'standard' && histRate !== null,
-    showStandard: state.ui.rateMode !== 'hist',
-  };
-  const cfg = buildMainChartConfig(rows, opts);
+  let cfg;
+  if (state.ui.chartMode === 'historical') {
+    const { rows, histRate } = computeBacktestChartData();
+    const opts = {
+      currency: state.settings.currency, histRate,
+      showHist: state.ui.rateMode !== 'standard' && histRate !== null,
+      showStandard: state.ui.rateMode !== 'hist',
+    };
+    cfg = buildBacktestChartConfig(rows, opts);
+  } else {
+    const { rows, histRate } = computeChartData();
+    const opts = {
+      currency: state.settings.currency,
+      showHist: state.ui.rateMode !== 'standard' && histRate !== null,
+      showStandard: state.ui.rateMode !== 'hist',
+    };
+    cfg = buildMainChartConfig(rows, opts);
+  }
   mainChart.data = cfg.data;
   mainChart.update('none');
 }
@@ -1076,6 +1220,7 @@ function tabbarTemplate() {
   const items = [
     { k: 'resume', l: 'Résumé', icon: ICONS.trending },
     { k: 'journal', l: 'Journal', icon: ICONS.book },
+    { k: 'calculs', l: 'Calculs', icon: ICONS.calc },
     { k: 'reglages', l: 'Réglages', icon: ICONS.gear },
   ];
   return '<div class="wrap">' + items.map(it =>
@@ -1136,8 +1281,52 @@ function forecastSummaryTemplate(rows, histRate, currency, rateMode, years) {
   '</div>';
 }
 
+function backtestLegendTemplate(rateMode, histRate) {
+  const chips = [
+    { label: 'Capital investi', color: 'var(--invested)' },
+    { label: 'Valeur réelle du portefeuille', color: 'var(--gain)' },
+  ];
+  if (rateMode !== 'standard' && histRate !== null) chips.push({ label: 'Si taux historique', color: 'var(--forecast-hist)', dashed: true });
+  if (rateMode !== 'hist') STANDARD_RATES.forEach(r => chips.push({ label: 'Si ' + r.label, color: 'var(--forecast-' + r.key + ')', dashed: true }));
+  return '<div class="legend">' + chips.map(c =>
+    '<div class="legend-item" style="color:' + c.color + '"><span class="legend-swatch ' + (c.dashed ? 'dashed' : 'solid') + '"></span><span style="color:var(--muted)">' + c.label + '</span></div>'
+  ).join('') + '</div>';
+}
+
+function backtestSummaryTemplate(rows, histRate, currency, rateMode) {
+  const last = rows[rows.length - 1];
+  if (!last) return '';
+  const items = [];
+  if (last.portfolioActual !== undefined && last.portfolioActual !== null) {
+    items.push({ label: 'Réel (votre portefeuille)', color: 'var(--gain)', value: last.portfolioActual, emphasis: true });
+  }
+  if (rateMode !== 'standard' && histRate !== null && last.bHist !== undefined) {
+    items.push({ label: 'Si historique (' + fmtPct(histRate * 100) + ')', color: 'var(--forecast-hist)', value: last.bHist });
+  }
+  if (rateMode !== 'hist') {
+    STANDARD_RATES.forEach(r => {
+      const v = last['b_' + r.key];
+      if (v !== undefined) items.push({ label: 'Si ' + r.label, color: 'var(--forecast-' + r.key + ')', value: v });
+    });
+  }
+  if (items.length <= 1) return '';
+  const nonReal = items.filter(it => !it.emphasis).sort((a, b) => a.value - b.value);
+  const real = items.find(it => it.emphasis);
+  const ordered = real ? [...nonReal, real].sort((a, b) => a.value - b.value) : nonReal;
+  return '<div class="card" style="padding:12px;margin-top:10px;">' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;">Valeur à la date du dernier relevé, du plus bas au plus haut&nbsp;:</div>' +
+    ordered.map(it =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px;' + (it.emphasis ? 'font-weight:600;' : '') + '">' +
+        '<span style="display:flex;align-items:center;gap:6px;color:var(--text);"><span style="width:8px;height:8px;border-radius:999px;background:' + it.color + ';display:inline-block;"></span>' + it.label + '</span>' +
+        '<span style="font-family:\'IBM Plex Mono\',monospace;color:var(--text);">' + fmtMoney(it.value, currency) + '</span>' +
+      '</div>'
+    ).join('') +
+  '</div>';
+}
+
 function resumeTabTemplate() {
-  const { rows, histRate, lastKnownValueEntry } = computeChartData();
+  const isHist = state.ui.chartMode === 'historical';
+  const { rows, histRate, lastKnownValueEntry } = isHist ? computeBacktestChartData() : computeChartData();
   const hasData = rows.length > 0;
   const hasValueEntry = !!lastKnownValueEntry;
   const valueCount = referenceValues(state.values).length;
@@ -1147,42 +1336,67 @@ function resumeTabTemplate() {
   }
 
   let html = '';
-  html += legendTemplate(state.ui.rateMode, hasValueEntry, histRate);
+
+  html += '<div class="subtab-row">' +
+    '<button class="subtab-btn' + (!isHist ? ' active' : '') + '" data-action="set-chart-mode" data-mode="forecast">Prévisions</button>' +
+    '<button class="subtab-btn' + (isHist ? ' active' : '') + '" data-action="set-chart-mode" data-mode="historical">Historique</button>' +
+  '</div>';
+
+  html += isHist ? backtestLegendTemplate(state.ui.rateMode, histRate) : legendTemplate(state.ui.rateMode, hasValueEntry, histRate);
   if (chartLibAvailable()) {
     html += '<div class="card"><div class="chart-box"><canvas id="main-chart"></canvas></div></div>';
   } else {
     html += chartUnavailableTemplate();
   }
-  if (hasValueEntry) html += forecastSummaryTemplate(rows, histRate, state.settings.currency, state.ui.rateMode, state.ui.forecastYears);
-
-  html += '<div class="controls-row">' +
-    '<label class="field">Durée de projection<select data-role="forecast-years">' +
-      [5, 10, 15, 20].map(y => '<option value="' + y + '"' + (state.ui.forecastYears === y ? ' selected' : '') + '>' + y + ' ans</option>').join('') +
-    '</select></label>' +
-    '<label class="field">Taux utilisés<select data-role="rate-mode">' +
-      '<option value="hist"' + (state.ui.rateMode === 'hist' ? ' selected' : '') + '>Historique (mes données)</option>' +
-      '<option value="standard"' + (state.ui.rateMode === 'standard' ? ' selected' : '') + '>Taux standards</option>' +
-      '<option value="both"' + (state.ui.rateMode === 'both' ? ' selected' : '') + '>Les deux</option>' +
-    '</select></label>' +
-  '</div>';
-
-  html += '<div class="toggle-row">' +
-    '<input type="checkbox" id="proj-monthly-toggle" data-role="proj-monthly-enabled"' + (state.ui.projMonthlyEnabled ? ' checked' : '') + '>' +
-    '<label for="proj-monthly-toggle">Continuer les versements mensuels dans la projection</label>' +
-    '<input type="number" min="0" data-role="proj-monthly-amount" value="' + state.ui.projMonthlyAmount + '" ' + (state.ui.projMonthlyEnabled ? '' : 'disabled') + '>' +
-  '</div>';
-
-  if (!state.ui.projMonthlyEnabled) {
-    html += '<p class="hint">Projection basée uniquement sur le montant actuellement investi, sans nouveaux versements futurs.</p>';
+  if (isHist) {
+    if (hasValueEntry) html += backtestSummaryTemplate(rows, histRate, state.settings.currency, state.ui.rateMode);
+  } else {
+    if (hasValueEntry) html += forecastSummaryTemplate(rows, histRate, state.settings.currency, state.ui.rateMode, state.ui.forecastYears);
   }
-  if (!hasValueEntry) {
-    html += '<p class="hint">Ajoutez au moins une valeur de portefeuille pour activer les prévisions.</p>';
-  }
-  if (hasValueEntry && state.ui.rateMode !== 'standard' && histRate === null) {
-    html += '<p class="hint">Pas encore assez de recul pour estimer un taux historique fiable — ajoutez des relevés espacés dans le temps.</p>';
+
+  if (isHist) {
+    html += '<div class="controls-row">' +
+      '<label class="field">Taux utilisés<select data-role="rate-mode">' +
+        '<option value="hist"' + (state.ui.rateMode === 'hist' ? ' selected' : '') + '>Historique (mes données)</option>' +
+        '<option value="standard"' + (state.ui.rateMode === 'standard' ? ' selected' : '') + '>Taux standards</option>' +
+        '<option value="both"' + (state.ui.rateMode === 'both' ? ' selected' : '') + '>Les deux</option>' +
+      '</select></label>' +
+    '</div>';
+    html += '<p class="hint">Ce mode rejoue les taux fixes ci-dessus avec exactement vos mêmes versements, aux mêmes dates, sur la période déjà écoulée — pour comparer votre performance réelle à des repères simples plutôt que de projeter dans le futur.</p>';
+    if (!hasValueEntry) html += '<p class="hint">Ajoutez au moins une valeur de portefeuille pour activer la comparaison.</p>';
+    if (hasValueEntry && state.ui.rateMode !== 'standard' && histRate === null) {
+      html += '<p class="hint">Pas encore assez de recul pour estimer un taux historique fiable — ajoutez des relevés espacés dans le temps.</p>';
+    }
+  } else {
+    html += '<div class="controls-row">' +
+      '<label class="field">Durée de projection<select data-role="forecast-years">' +
+        [5, 10, 15, 20].map(y => '<option value="' + y + '"' + (state.ui.forecastYears === y ? ' selected' : '') + '>' + y + ' ans</option>').join('') +
+      '</select></label>' +
+      '<label class="field">Taux utilisés<select data-role="rate-mode">' +
+        '<option value="hist"' + (state.ui.rateMode === 'hist' ? ' selected' : '') + '>Historique (mes données)</option>' +
+        '<option value="standard"' + (state.ui.rateMode === 'standard' ? ' selected' : '') + '>Taux standards</option>' +
+        '<option value="both"' + (state.ui.rateMode === 'both' ? ' selected' : '') + '>Les deux</option>' +
+      '</select></label>' +
+    '</div>';
+
+    html += '<div class="toggle-row">' +
+      '<input type="checkbox" id="proj-monthly-toggle" data-role="proj-monthly-enabled"' + (state.ui.projMonthlyEnabled ? ' checked' : '') + '>' +
+      '<label for="proj-monthly-toggle">Continuer les versements mensuels dans la projection</label>' +
+      '<input type="number" min="0" data-role="proj-monthly-amount" value="' + state.ui.projMonthlyAmount + '" ' + (state.ui.projMonthlyEnabled ? '' : 'disabled') + '>' +
+    '</div>';
+
+    if (!state.ui.projMonthlyEnabled) {
+      html += '<p class="hint">Projection basée uniquement sur le montant actuellement investi, sans nouveaux versements futurs.</p>';
+    }
+    if (!hasValueEntry) {
+      html += '<p class="hint">Ajoutez au moins une valeur de portefeuille pour activer les prévisions.</p>';
+    }
+    if (hasValueEntry && state.ui.rateMode !== 'standard' && histRate === null) {
+      html += '<p class="hint">Pas encore assez de recul pour estimer un taux historique fiable — ajoutez des relevés espacés dans le temps.</p>';
+    }
   }
   if (hasValueEntry && histRate !== null) {
-    html += '<p class="hint">Taux annualisé estimé à partir de vos données&nbsp;: <span style="color:var(--forecast-hist)">' + fmtPct(histRate * 100) + '</span> par an (calcul XIRR, qui tient compte de la date de chaque versement).</p>';
+    html += '<p class="hint">Taux annualisé estimé à partir de vos données&nbsp;: <span style="color:var(--forecast-hist)">' + fmtPct(histRate * 100) + '</span> par an (calcul XIRR — <span data-action="set-tab" data-tab="calculs" style="color:var(--forecast-hist);text-decoration:underline;cursor:pointer;">voir le détail du calcul</span>).</p>';
   }
 
   html += '<div class="section-block">' +
@@ -1388,6 +1602,108 @@ function syncConflictModalTemplate() {
   '</div>';
 }
 
+/* -------------------------------- Calculs tab ------------------------------ */
+
+function calculsTabTemplate() {
+  const sortedContrib = [...state.contributions].sort((a, b) => a.date.localeCompare(b.date));
+  const refValues = referenceValues(state.values).sort((a, b) => a.date.localeCompare(b.date));
+  const totalInvested = sortedContrib.reduce((s, c) => s + c.amount, 0);
+  const lastValueEntry = refValues.length ? refValues[refValues.length - 1] : null;
+  const currency = state.settings.currency;
+
+  let html = '<div class="settings-block">';
+
+  if (!sortedContrib.length || !lastValueEntry) {
+    html += emptyStateTemplate(ICONS.calc, 'Pas encore de quoi calculer', "Ajoutez au moins un versement et une valeur de portefeuille de référence pour voir le détail des calculs avec vos propres chiffres.");
+    html += '</div>';
+    return html;
+  }
+
+  const gain = lastValueEntry.value - totalInvested;
+  const totalReturnPct = totalInvested > 0 ? (gain / totalInvested) * 100 : null;
+  const firstDate = sortedContrib[0].date;
+  const days = daysBetween(firstDate, lastValueEntry.date);
+  const months = Math.round(days / 30.44 * 10) / 10;
+  const histRate = estimateHistoricalRate(state.contributions, refValues);
+
+  /* --- 1. Vos chiffres --- */
+  html += '<div>' +
+    '<div class="section-title">Vos chiffres actuels</div>' +
+    '<div class="card" style="padding:12px;margin-top:8px;font-size:13px;line-height:2;">' +
+      '<div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Capital investi (total des versements)</span><span style="font-family:\'IBM Plex Mono\',monospace;">' + fmtMoney(totalInvested, currency) + '</span></div>' +
+      '<div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Valeur au dernier relevé (' + fmtDateLong(lastValueEntry.date) + ')</span><span style="font-family:\'IBM Plex Mono\',monospace;">' + fmtMoney(lastValueEntry.value, currency) + '</span></div>' +
+      '<div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Gain</span><span style="font-family:\'IBM Plex Mono\',monospace;color:' + (gain >= 0 ? 'var(--gain)' : 'var(--loss)') + ';">' + (gain >= 0 ? '+' : '') + fmtMoney(gain, currency) + '</span></div>' +
+      '<div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Période couverte</span><span style="font-family:\'IBM Plex Mono\',monospace;">' + days + ' jours (~' + months + ' mois)</span></div>' +
+    '</div>' +
+  '</div>';
+
+  /* --- 2. Retour total (non annualisé) --- */
+  html += '<div>' +
+    '<div class="section-title">Retour total (non annualisé)</div>' +
+    '<p class="desc">Le calcul le plus simple&nbsp;: le gain divisé par le capital investi, sans tenir compte du temps écoulé.</p>' +
+    '<div class="card" style="padding:12px;font-family:\'IBM Plex Mono\',monospace;font-size:12px;color:var(--muted);">' +
+      'gain ÷ investi = ' + fmtMoney(gain, currency) + ' ÷ ' + fmtMoney(totalInvested, currency) + ' = <span style="color:var(--text);">' + (totalReturnPct !== null ? fmtPct(totalReturnPct) : '—') + '</span>' +
+    '</div>' +
+    '<p class="hint">C\'est un retour <em>sur toute la période</em> (ici ~' + months + ' mois), pas un taux annuel. Utile pour savoir "combien j\'ai gagné au total", mais pas pour comparer avec un taux de marché annuel (type "8% par an").</p>' +
+  '</div>';
+
+  /* --- 3. XIRR --- */
+  const cashflows = sortedContrib
+    .filter(c => c.date <= lastValueEntry.date)
+    .map(c => ({ date: c.date, amount: -c.amount }));
+  cashflows.push({ date: lastValueEntry.date, amount: lastValueEntry.value });
+
+  html += '<div>' +
+    '<div class="section-title">Taux annualisé (XIRR)</div>' +
+    '<p class="desc">C\'est le taux affiché comme "taux historique" dans l\'app. Il répond à la question&nbsp;: <em>"à quel taux annuel constant faudrait-il placer chaque versement, exactement à sa date, pour arriver à la valeur actuelle ?"</em> C\'est la même méthode que la fonction XIRR d\'Excel ou Google Sheets.</p>' +
+    '<div class="card" style="padding:12px;font-size:11px;">' +
+      '<div style="color:var(--muted);margin-bottom:6px;">Flux utilisés pour le calcul (versements en sortie, valeur actuelle en entrée)&nbsp;:</div>' +
+      '<div style="max-height:180px;overflow-y:auto;">' +
+      cashflows.map(cf => {
+        const isOut = cf.amount < 0;
+        return '<div style="display:flex;justify-content:space-between;padding:2px 0;font-family:\'IBM Plex Mono\',monospace;">' +
+          '<span style="color:var(--muted);">' + fmtDateShort(cf.date) + '</span>' +
+          '<span style="color:' + (isOut ? 'var(--invested)' : 'var(--gain)') + ';">' + (isOut ? '' : '+') + fmtMoney(cf.amount, currency) + '</span>' +
+        '</div>';
+      }).join('') +
+      '</div>' +
+      '<div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px;display:flex;justify-content:space-between;">' +
+        '<span style="color:var(--muted);">Taux qui équilibre ces flux</span>' +
+        '<span style="font-family:\'IBM Plex Mono\',monospace;color:var(--forecast-hist);">' + (histRate !== null ? fmtPct(histRate * 100) : 'pas assez de recul') + '</span>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+
+  /* --- 4. Pourquoi ça peut sembler élevé --- */
+  html += '<div>' +
+    '<div class="section-title">Pourquoi ce taux peut sembler élevé (ou instable)</div>' +
+    '<p class="desc">Sur un historique de quelques mois seulement, l\'annualisation amplifie fortement les résultats&nbsp;: un même gain en dollars, ramené "à l\'échelle d\'une année complète", donne un pourcentage bien plus grand que le gain réellement observé. De plus, XIRR pondère chaque versement selon sa date&nbsp;: l\'argent versé il y a longtemps (même en petite quantité) a eu plus de temps pour fructifier et pèse donc plus dans le calcul que l\'argent versé récemment, même si celui-ci représente une plus grosse somme. Ce chiffre se stabilisera naturellement avec plus de mois d\'historique — c\'est normal et attendu, pas une erreur de calcul.</p>' +
+  '</div>';
+
+  /* --- 5. Taux instantané (Dietz) --- */
+  html += '<div>' +
+    '<div class="section-title">Taux "entre deux relevés" (méthode de Dietz modifiée)</div>' +
+    '<p class="desc">Utilisée pour le graphique "Rentabilité au fil du temps". Entre deux relevés, on retire du gain les versements faits pendant l\'intervalle, en les pondérant par le temps qu\'ils ont eu pour fructifier&nbsp;:</p>' +
+    '<div class="card" style="padding:12px;font-family:\'IBM Plex Mono\',monospace;font-size:11px;color:var(--muted);white-space:pre-wrap;">poids d\'un versement = (jours restants dans la période) ÷ (durée totale de la période)\ntaux = ((valeur_fin − valeur_début − versements) ÷ (valeur_début + Σ versements×poids)) ^ (365 ÷ jours) − 1</div>' +
+  '</div>';
+
+  /* --- 6. Prévisions --- */
+  html += '<div>' +
+    '<div class="section-title">Prévisions futures</div>' +
+    '<p class="desc">Chaque courbe en pointillé (onglet "Prévisions") applique un taux annuel fixe, converti en taux mensuel équivalent, et ajoute le versement mensuel prévu chaque mois&nbsp;:</p>' +
+    '<div class="card" style="padding:12px;font-family:\'IBM Plex Mono\',monospace;font-size:11px;color:var(--muted);white-space:pre-wrap;">taux_mensuel = (1 + taux_annuel) ^ (1/12) − 1\nvaleur(mois) = valeur(mois − 1) × (1 + taux_mensuel) + versement_mensuel</div>' +
+  '</div>';
+
+  /* --- 7. Mode historique --- */
+  html += '<div>' +
+    '<div class="section-title">Mode "Historique" (rétrospectif)</div>' +
+    '<p class="desc">Contrairement aux prévisions (qui supposent des versements futurs hypothétiques), ce mode rejoue <em>vos vrais versements, aux vraies dates déjà passées</em>, en leur appliquant un taux fixe au lieu de la performance réelle du marché — pour comparer directement "ce que j\'ai eu" à "ce que j\'aurais eu à taux constant".</p>' +
+  '</div>';
+
+  html += '</div>';
+  return html;
+}
+
 function modalTemplate() {
   if (state.ui.syncConflict) return syncConflictModalTemplate();
   const type = state.ui.formOpen;
@@ -1437,6 +1753,8 @@ function render() {
     if (referenceValues(state.values).length >= 2) initRateChart('rate-chart');
   } else if (state.ui.tab === 'journal') {
     main.innerHTML = journalTabTemplate();
+  } else if (state.ui.tab === 'calculs') {
+    main.innerHTML = calculsTabTemplate();
   } else {
     main.innerHTML = reglagesTabTemplate();
   }
@@ -1482,6 +1800,7 @@ function handleClickAction(action, actionEl, clickTarget) {
     });
   }
   else if (action === 'toggle-theme') { state.settings.theme = state.settings.theme === 'light' ? 'dark' : 'light'; persist('settings'); render(); }
+  else if (action === 'set-chart-mode') { state.ui.chartMode = actionEl.getAttribute('data-mode'); render(); }
   else if (action === 'install-app') { triggerInstall(); }
   else if (action === 'open-form-contribution') { state.ui.formOpen = 'contribution'; state.ui.editEntry = null; render(); }
   else if (action === 'open-form-value') { state.ui.formOpen = 'value'; state.ui.editEntry = null; render(); }
