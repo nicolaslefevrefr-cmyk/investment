@@ -286,17 +286,61 @@ function buildHistoricalSeries(contributions, values) {
   });
 }
 
+// Résout le taux annualisé r tel que la somme actualisée des flux (versements en
+// sortie, valeur finale en entrée) soit nulle — c'est la méthode XIRR standard
+// (celle utilisée par Excel/Google Sheets), qui tient compte de la date exacte
+// de CHAQUE versement plutôt que de supposer que tout l'argent a été investi
+// dès le premier jour. Recherche par dichotomie (la fonction est monotone
+// décroissante ici, donc pas besoin de dérivée).
+function computeXIRR(cashflows) {
+  if (cashflows.length < 2) return null;
+  const sorted = [...cashflows].sort((a, b) => a.date.localeCompare(b.date));
+  const t0 = sorted[0].date;
+  const times = sorted.map(cf => daysBetween(t0, cf.date) / 365);
+  const amounts = sorted.map(cf => cf.amount);
+
+  function npv(rate) {
+    let sum = 0;
+    for (let i = 0; i < amounts.length; i++) {
+      const denom = Math.pow(1 + rate, times[i]);
+      if (!isFinite(denom) || denom === 0) return NaN;
+      sum += amounts[i] / denom;
+    }
+    return sum;
+  }
+
+  let lo = -0.9999, hi = 10;
+  let fLo = npv(lo), fHi = npv(hi);
+  if (Number.isNaN(fLo) || Number.isNaN(fHi)) return null;
+  if (fLo * fHi > 0) {
+    hi = 100; // flux très favorables : élargit la recherche avant d'abandonner
+    fHi = npv(hi);
+    if (fLo * fHi > 0) return null;
+  }
+  for (let iter = 0; iter < 100; iter++) {
+    const mid = (lo + hi) / 2;
+    const fMid = npv(mid);
+    if (!isFinite(fMid)) return null;
+    if (Math.abs(fMid) < 1e-6 || (hi - lo) < 1e-9) return mid;
+    if ((fLo < 0) === (fMid < 0)) { lo = mid; fLo = fMid; } else { hi = mid; }
+  }
+  return (lo + hi) / 2;
+}
+
 function estimateHistoricalRate(contributions, values) {
   if (contributions.length === 0 || values.length === 0) return null;
   const firstDate = [...contributions].sort((a, b) => a.date.localeCompare(b.date))[0].date;
   const lastValueEntry = [...values].sort((a, b) => a.date.localeCompare(b.date)).slice(-1)[0];
   const days = daysBetween(firstDate, lastValueEntry.date);
   if (days < 21) return null;
-  const investedAtLastDate = contributions.filter(c => c.date <= lastValueEntry.date).reduce((s, c) => s + c.amount, 0);
-  if (investedAtLastDate <= 0) return null;
-  const ratio = lastValueEntry.value / investedAtLastDate;
-  if (ratio <= 0) return null;
-  return Math.pow(ratio, 365 / days) - 1;
+
+  const cashflows = contributions
+    .filter(c => c.date <= lastValueEntry.date)
+    .map(c => ({ date: c.date, amount: -c.amount }));
+  if (!cashflows.length) return null;
+  cashflows.push({ date: lastValueEntry.date, amount: lastValueEntry.value });
+
+  return computeXIRR(cashflows);
 }
 
 function computeCumulativeRateSeries(contributions, values) {
@@ -308,11 +352,12 @@ function computeCumulativeRateSeries(contributions, values) {
   sortedValues.forEach(v => {
     const days = daysBetween(firstDate, v.date);
     if (days < 21) return;
-    const invested = sortedContrib.filter(c => c.date <= v.date).reduce((s, c) => s + c.amount, 0);
-    if (invested <= 0) return;
-    const ratio = v.value / invested;
-    if (ratio <= 0) return;
-    series.push({ date: v.date, cumulative: (Math.pow(ratio, 365 / days) - 1) * 100 });
+    const cashflows = sortedContrib.filter(c => c.date <= v.date).map(c => ({ date: c.date, amount: -c.amount }));
+    if (!cashflows.length) return;
+    cashflows.push({ date: v.date, amount: v.value });
+    const rate = computeXIRR(cashflows);
+    if (rate === null) return;
+    series.push({ date: v.date, cumulative: rate * 100 });
   });
   return series;
 }
@@ -1137,7 +1182,7 @@ function resumeTabTemplate() {
     html += '<p class="hint">Pas encore assez de recul pour estimer un taux historique fiable — ajoutez des relevés espacés dans le temps.</p>';
   }
   if (hasValueEntry && histRate !== null) {
-    html += '<p class="hint">Taux annualisé estimé à partir de vos données&nbsp;: <span style="color:var(--forecast-hist)">' + fmtPct(histRate * 100) + '</span> par an (méthode simplifiée, à titre indicatif).</p>';
+    html += '<p class="hint">Taux annualisé estimé à partir de vos données&nbsp;: <span style="color:var(--forecast-hist)">' + fmtPct(histRate * 100) + '</span> par an (calcul XIRR, qui tient compte de la date de chaque versement).</p>';
   }
 
   html += '<div class="section-block">' +
